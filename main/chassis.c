@@ -31,6 +31,10 @@ static volatile int64_t s_cmd_us;
 static volatile float s_lift_cmd;
 static volatile int64_t s_lift_cmd_us;
 
+/* 运行时可调基础转速（步/秒） */
+static volatile float s_base_sps = CHASSIS_BASE_SPEED_DEFAULT;
+static volatile float s_lift_sps = LIFT_SPEED_DEFAULT;
+
 static SemaphoreHandle_t s_status_mutex;
 static chassis_status_t s_status;
 
@@ -43,6 +47,30 @@ static float clampf(float v, float lo, float hi)
         return hi;
     }
     return v;
+}
+
+/**
+ * @brief 把四轮步频向量的峰值缩放到 target_sps
+ *
+ * 只改变整体快慢，不改变各轮的比例，因此平移/斜向/自转的方向不变。
+ * 全零输入直接返回，避免除零。
+ */
+static void normalize_peak(float steps[4], float target_sps)
+{
+    float peak = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        float a = fabsf(steps[i]);
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    if (peak < 1.0f || target_sps < 1.0f) {
+        return;
+    }
+    const float scale = target_sps / peak;
+    for (int i = 0; i < 4; ++i) {
+        steps[i] *= scale;
+    }
 }
 
 void chassis_set_mode(chassis_mode_t mode)
@@ -77,13 +105,30 @@ void chassis_set_velocity(float vx, float vy, float omega)
 
 void chassis_lift_jog(float steps_per_sec)
 {
-    if (steps_per_sec > STEPPER_MAX_SPEED) {
-        steps_per_sec = STEPPER_MAX_SPEED;
-    } else if (steps_per_sec < -STEPPER_MAX_SPEED) {
-        steps_per_sec = -STEPPER_MAX_SPEED;
-    }
-    s_lift_cmd = steps_per_sec;
+    /* 只保留方向，具体速度取运行时 lift_speed */
+    s_lift_cmd = (steps_per_sec > 0.0f) ? 1.0f
+               : (steps_per_sec < 0.0f) ? -1.0f
+                                        : 0.0f;
     s_lift_cmd_us = esp_timer_get_time();
+}
+
+void chassis_set_speeds(float chassis_sps, float lift_sps)
+{
+    chassis_sps = clampf(chassis_sps, CHASSIS_BASE_SPEED_MIN, CHASSIS_BASE_SPEED_MAX);
+    lift_sps = clampf(lift_sps, LIFT_SPEED_MIN, LIFT_SPEED_MAX);
+    s_base_sps = chassis_sps;
+    s_lift_sps = lift_sps;
+    ESP_LOGI(TAG, "speeds -> chassis %.0f sps / lift %.0f sps", chassis_sps, lift_sps);
+}
+
+void chassis_get_speeds(float *chassis_sps, float *lift_sps)
+{
+    if (chassis_sps != NULL) {
+        *chassis_sps = s_base_sps;
+    }
+    if (lift_sps != NULL) {
+        *lift_sps = s_lift_sps;
+    }
 }
 
 void chassis_stop(void)
@@ -147,12 +192,13 @@ static void chassis_task(void *arg)
 
         if (s_mode == CHASSIS_MODE_LINE) {
             float volts[LINE_SENSOR_COUNT] = { 0 };
-            line_params_t p;
-            line_follow_get_params(&p);
+            /* 循迹基础航速 = 运行时 chassis_base_speed（步/秒）折算成 m/s */
+            const float base_mps =
+                mecanum_steps_to_mps((int32_t)lroundf(s_base_sps));
 
             if (ads1115_get_latest(volts, &seq)) {
                 float omega = line_follow_update(volts, dt, &line_seen, &line_err);
-                vel.vy = line_seen ? p.base_speed : 0.0f;
+                vel.vy = line_seen ? base_mps : 0.0f;
                 vel.vx = 0.0f;
                 vel.omega = line_seen ? omega : 0.0f;
             } else {
@@ -172,10 +218,10 @@ static void chassis_task(void *arg)
             line_seen = false;
         }
 
-        /* 升降点动看门狗 */
+        /* 升降点动看门狗：方向 × 运行时 lift_speed */
         float lift_sps = 0.0f;
         if ((now - s_lift_cmd_us) <= (int64_t)LIFT_JOG_TIMEOUT_MS * 1000) {
-            lift_sps = s_lift_cmd;
+            lift_sps = s_lift_cmd * s_lift_sps;
         } else {
             s_lift_cmd = 0.0f;
         }
@@ -196,8 +242,17 @@ static void chassis_task(void *arg)
         mecanum_inverse(&vel, wheel_mps);
         float steps_f[4];
         for (int i = 0; i < 4; ++i) {
-            wheel_steps[i] = mecanum_mps_to_steps(wheel_mps[i]);
-            steps_f[i] = (float)wheel_steps[i];
+            steps_f[i] = (float)mecanum_mps_to_steps(wheel_mps[i]);
+        }
+
+        /* 手动遥控：方向由 vx/vy/ω 决定，幅值统一归一化到 chassis_base_speed，
+           这样速度滑块才能实时决定实际快慢（斜向/自转按比例分配） */
+        if (s_mode == CHASSIS_MODE_MANUAL) {
+            normalize_peak(steps_f, s_base_sps);
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            wheel_steps[i] = (int32_t)lroundf(steps_f[i]);
         }
         stepper_set_chassis_speeds(steps_f);
 

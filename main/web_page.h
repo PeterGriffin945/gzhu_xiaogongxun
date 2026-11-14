@@ -69,6 +69,8 @@ input[type=checkbox]::after{content:"";position:absolute;top:3px;left:3px;width:
 border-radius:50%;background:#fff;transition:.2s}
 input[type=checkbox]:checked::after{left:23px}
 input[type=range]{width:100%;accent-color:var(--acc);height:24px;margin:0}
+select{background:#17222e;color:var(--fg);border:1px solid #273a4c;border-radius:9px;
+padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
 .slider{margin:10px 0}
 .slider .top{display:flex;justify-content:space-between;font-size:12px;color:#b7c6d6;margin-bottom:2px}
 .slider .top b{color:var(--acc);font-weight:600;font-variant-numeric:tabular-nums}
@@ -81,6 +83,15 @@ input[type=range]{width:100%;accent-color:var(--acc);height:24px;margin:0}
 .wheels{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-top:6px}
 .wheel{background:#0b141d;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11px;color:var(--dim)}
 .wheel b{float:right;color:#cfe3f5;font-weight:500;font-variant-numeric:tabular-nums}
+.srv{margin:12px 0 0;padding-top:10px;border-top:1px dashed #1b2836}
+.srv:first-of-type{border-top:none;padding-top:0}
+.srv .top{display:flex;justify-content:space-between;font-size:12px;color:#b7c6d6;margin-bottom:5px}
+.srv .top b{color:var(--acc);font-weight:600;font-variant-numeric:tabular-nums}
+.srow{display:grid;grid-template-columns:40px 1fr 40px 56px;gap:6px;align-items:center}
+.srow button{padding:5px 0;font-size:12px;border-radius:9px}
+.pulse{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.pulse .ttl{display:flex;justify-content:space-between;font-size:12px;color:#b7c6d6}
+.pulse .ttl b{color:var(--warn);font-weight:600}
 </style>
 </head>
 <body>
@@ -93,15 +104,15 @@ input[type=range]{width:100%;accent-color:var(--acc);height:24px;margin:0}
   <section class="card">
     <h2>8 路循迹探头 <span id="seq">seq -</span></h2>
     <div class="sensors" id="sensors"></div>
-    <div class="row"><label>判定阈值</label><b class="mono" id="thv">1.65 V</b></div>
-    <input type="range" id="th" min="0" max="3.3" step="0.01" value="1.65">
+    <div class="row"><label>判定阈值</label><b class="mono" id="thv">4.00 V</b></div>
+    <input type="range" id="th" min="0.0" max="5.0" step="0.05" value="4.00">
     <div class="switch"><span>黑线为高电平（极性反转）</span>
       <input type="checkbox" id="inv"></div>
     <div class="switch"><span>探头安装顺序反转（8 → 1）</span>
       <input type="checkbox" id="rev"></div>
     <div class="row"><span class="badge" id="linestate">循迹 --</span>
       <span class="mono" id="errv">err 0.00</span></div>
-    <div class="hint">条形高度=电压，红线=阈值；探头变红表示判定为黑线。编号 1 在最左、8 在最右。</div>
+    <div class="hint">条形高度=电压(0~5V 满量程)，橙线=阈值；探头变红表示判定为黑线。编号 1 在最左、8 在最右。</div>
   </section>
 
   <section class="card">
@@ -125,7 +136,15 @@ input[type=range]{width:100%;accent-color:var(--acc);height:24px;margin:0}
       <button data-vx="0" data-vy="0" data-w="1.6">↺ 左旋</button>
       <button data-vx="0" data-vy="0" data-w="-1.6">右旋 ↻</button>
     </div>
-    <div class="switch" style="margin-top:10px"><span>底盘使能 (EN / GPIO42)</span>
+    <div class="slider" style="margin-top:12px">
+      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">450 步/秒</b></div>
+      <input type="range" id="cs" min="100" max="1500" step="10" value="450">
+    </div>
+    <div class="slider">
+      <div class="top"><span>升降速度 M5</span><b id="lsv">400 步/秒</b></div>
+      <input type="range" id="ls" min="100" max="1200" step="10" value="400">
+    </div>
+    <div class="switch" style="margin-top:2px"><span>底盘使能 (EN / GPIO42)</span>
       <input type="checkbox" id="enChassis"></div>
     <div class="switch"><span>升降使能 (EN / GPIO41)</span>
       <input type="checkbox" id="enLift"></div>
@@ -133,32 +152,83 @@ input[type=range]{width:100%;accent-color:var(--acc);height:24px;margin:0}
       <button id="liftUp">▲ 升降点动</button>
       <button id="liftDown">▼ 下降点动</button>
     </div>
-    <div class="hint">按住方向键持续运动，松开立即停止；指令 400ms 未刷新自动停车。方向按 O 型麦轮解算。</div>
+    <div class="hint">按住方向键持续运动，松开立即停止；指令 400ms 未刷新自动停车。方向键只决定方向，实际轮速由上面的"底盘航速"决定。</div>
     <div class="wheels" id="wheels"></div>
   </section>
 
   <section class="card">
     <h2>机械臂舵机 <span id="srvbadge" class="badge">LU9685</span></h2>
-    <div class="slider">
+    <div class="row" style="margin-top:-4px">
+      <label>协议模式</label>
+      <select id="proto">
+        <option value="0">单字节角度 0~180（默认）</option>
+        <option value="1">双字节脉宽 · 低字节在前</option>
+        <option value="2">双字节脉宽 · 高字节在前</option>
+      </select>
+    </div>
+
+    <div class="srv">
       <div class="top"><span>底座旋转 CH0 · 20kg</span><b id="a0">90°</b></div>
-      <input type="range" id="s0" min="0" max="180" step="1" value="90">
+      <div class="srow">
+        <button data-rng="s0" data-d="-1">−1°</button>
+        <input type="range" id="s0" min="0" max="180" step="1" value="90">
+        <button data-rng="s0" data-d="1">+1°</button>
+        <button class="stop" data-rng="s0" data-mid="1">中位</button>
+      </div>
     </div>
-    <div class="slider">
+
+    <div class="srv">
       <div class="top"><span>物料盘 CH4 · SG90</span><b id="a4">90°</b></div>
-      <input type="range" id="s4" min="0" max="180" step="1" value="90">
+      <div class="srow">
+        <button data-rng="s4" data-d="-1">−1°</button>
+        <input type="range" id="s4" min="0" max="180" step="1" value="90">
+        <button data-rng="s4" data-d="1">+1°</button>
+        <button class="stop" data-rng="s4" data-mid="1">中位</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="ghost" data-tray="0">工位1 · 0°</button>
+        <button class="ghost" data-tray="45">工位2 · 45°</button>
+        <button class="ghost" data-tray="90">工位3 · 90°</button>
+        <button class="ghost" data-tray="135">工位4 · 135°</button>
+        <button class="ghost" data-tray="180">工位5 · 180°</button>
+      </div>
     </div>
-    <div class="btnrow" style="margin-top:4px">
-      <button class="ghost" data-tray="0">工位1 · 0°</button>
-      <button class="ghost" data-tray="45">工位2 · 45°</button>
-      <button class="ghost" data-tray="90">工位3 · 90°</button>
-      <button class="ghost" data-tray="135">工位4 · 135°</button>
-      <button class="ghost" data-tray="180">工位5 · 180°</button>
-    </div>
-    <div class="slider" style="margin-top:12px">
+
+    <div class="srv">
       <div class="top"><span>夹爪开合 CH8 · 20kg</span><b id="a8">90°</b></div>
-      <input type="range" id="s8" min="0" max="180" step="1" value="90">
+      <div class="srow">
+        <button data-rng="s8" data-d="-1">−1°</button>
+        <input type="range" id="s8" min="0" max="180" step="1" value="90">
+        <button data-rng="s8" data-d="1">+1°</button>
+        <button class="stop" data-rng="s8" data-mid="1">中位</button>
+      </div>
     </div>
-    <div class="hint">滑块松开后下发角度；上电默认三路 90° 中位。LU9685 地址 0x40/0x00 自动探测。</div>
+
+    <div class="pulse">
+      <div class="ttl"><span>360° 连续舵机 · 定时点动</span><b id="pulseInfo">—</b></div>
+      <div class="row" style="margin-top:6px"><label>通道</label>
+        <select id="pCh">
+          <option value="0">CH0 底座</option>
+          <option value="4">CH4 物料盘</option>
+          <option value="8">CH8 夹爪</option>
+        </select>
+      </div>
+      <div class="slider"><div class="top"><span>速度角（&lt;90 正转 / &gt;90 反转）</span><b id="pAv">60°</b></div>
+        <input type="range" id="pA" min="0" max="180" step="1" value="60"></div>
+      <div class="slider"><div class="top"><span>持续时间</span><b id="pDv">500 ms</b></div>
+        <input type="range" id="pD" min="50" max="3000" step="50" value="500"></div>
+      <div class="slider"><div class="top"><span>中位停止校准</span><b id="pCv">90</b></div>
+        <input type="range" id="pC" min="85" max="95" step="1" value="90"></div>
+      <div class="btnrow">
+        <button id="pulseGo" class="primary">▶ 点动</button>
+        <button id="pulseStop" class="stop">■ 停止</button>
+      </div>
+    </div>
+
+    <div class="hint">
+      滑块拖动时 30ms 节流实时下发；鼠标悬停滑块滚动滚轮可按 1° 微调。<br>
+      若舵机表现为"持续转动、角度无效"，多半是 360° 连续旋转舵机：把速度角调到 60/120 用点动控制转角，中位校准到实际停转点（85~95）。
+    </div>
   </section>
 
   <section class="card">
@@ -169,13 +239,11 @@ input[type=range]{width:100%;accent-color:var(--acc);height:24px;margin:0}
       <input type="range" id="ki" min="0" max="2" step="0.01" value="0"></div>
     <div class="slider"><div class="top"><span>Kd 微分</span><b id="kdv">0.00</b></div>
       <input type="range" id="kd" min="0" max="1" step="0.01" value="0"></div>
-    <div class="slider"><div class="top"><span>基础速度</span><b id="basev">0.30 m/s</b></div>
-      <input type="range" id="base" min="0" max="1.5" step="0.01" value="0.3"></div>
     <div class="slider"><div class="top"><span>修正常数上限 ω</span><b id="omv">3.0 rad/s</b></div>
       <input type="range" id="om" min="0" max="8" step="0.1" value="3"></div>
     <div class="slider"><div class="top"><span>加速度（5 轴共用）</span><b id="accv">3000 步/秒²</b></div>
       <input type="range" id="acc" min="500" max="20000" step="100" value="3000"></div>
-    <div class="hint">误差范围 ±3.5（探头间距）。Kp 过大会左右摆动，可先加 Kd 抑制；Ki 一般保持 0。</div>
+    <div class="hint">误差范围 ±3.5（探头间距）。Kp 过大会左右摆动，可先加 Kd 抑制；Ki 一般保持 0。循迹基础速度在"运动控制"里的底盘航速。</div>
   </section>
 
 </main>
@@ -218,8 +286,8 @@ window.addEventListener("pointercancel", () => { stopMove(); stopLift(); });
 $("btnStop").addEventListener("click", () => {
   stopMove(); stopLift(); api("/api/stop");
 });
-$("liftUp").addEventListener("pointerdown", e => { e.preventDefault(); holdLift(e.currentTarget, 700); });
-$("liftDown").addEventListener("pointerdown", e => { e.preventDefault(); holdLift(e.currentTarget, -700); });
+$("liftUp").addEventListener("pointerdown", e => { e.preventDefault(); holdLift(e.currentTarget, 1); });
+$("liftDown").addEventListener("pointerdown", e => { e.preventDefault(); holdLift(e.currentTarget, -1); });
 
 /* ---- 模式 ---- */
 $("mMan").onclick = () => { stopMove(); api("/api/mode?m=0"); };
@@ -229,45 +297,146 @@ $("mLine").onclick = () => { stopMove(); api("/api/mode?m=1"); };
 $("enChassis").onchange = e => api(`/api/en?chassis=${e.target.checked ? 1 : 0}`);
 $("enLift").onchange = e => api(`/api/en?lift=${e.target.checked ? 1 : 0}`);
 
-/* ---- 舵机 ---- */
-function bindServo(id, ch, label) {
+/* ---- 速度滑块（底盘 / 升降） ---- */
+let speedTimer = null;
+function sendSpeed() {
+  clearTimeout(speedTimer);
+  speedTimer = setTimeout(() => {
+    api(`/speed?chassis=${$("cs").value}&lift=${$("ls").value}`);
+  }, 100);
+}
+[["cs", "csv"], ["ls", "lsv"]].forEach(([id, lab]) => {
   const el = $(id);
   el.addEventListener("pointerdown", () => S.dragging = id);
-  el.addEventListener("input", () => { $(label).textContent = el.value + "°"; });
+  el.addEventListener("input", () => { $(lab).textContent = el.value + " 步/秒"; });
+  el.addEventListener("change", () => { S.dragging = null; sendSpeed(); });
+});
+
+/* ---- 舵机：实时节流 + 滚轮微调 + 微调/中位按钮 ---- */
+const SRV = [
+  { ch: 0, rng: "s0", lab: "a0" },
+  { ch: 4, rng: "s4", lab: "a4" },
+  { ch: 8, rng: "s8", lab: "a8" }
+];
+const CENTER = { 0: 90, 4: 90, 8: 90 };
+const srvState = {};
+
+function servoSet(ch, a, force) {
+  a = Math.max(0, Math.min(180, Math.round(a)));
+  const st = srvState[ch];
+  const send = () => { st.last = performance.now(); api(`/api/servo?ch=${ch}&a=${a}`); };
+  clearTimeout(st.timer);
+  if (force || performance.now() - st.last >= 30) {
+    send();
+  } else {
+    st.timer = setTimeout(send, 30);   /* 30ms 节流：尾帧必定发出 */
+  }
+  return a;
+}
+
+function syncServoUI(ch, a) {
+  const s = SRV.find(x => x.ch === ch);
+  if (!s) return;
+  $(s.rng).value = a;
+  $(s.lab).textContent = a + "°";
+}
+
+SRV.forEach(s => {
+  const el = $(s.rng);
+  srvState[s.ch] = { last: 0, timer: null };
+
+  el.addEventListener("pointerdown", () => { S.dragging = s.rng; });
+  el.addEventListener("input", () => {
+    $(s.lab).textContent = el.value + "°";
+    servoSet(s.ch, +el.value);
+  });
   el.addEventListener("change", () => {
     S.dragging = null;
-    api(`/api/servo?ch=${ch}&a=${el.value}`);
+    servoSet(s.ch, +el.value, true);
   });
-}
-bindServo("s0", 0, "a0");
-bindServo("s4", 4, "a4");
-bindServo("s8", 8, "a8");
-document.querySelectorAll("[data-tray]").forEach(b => {
+  /* 电脑滚轮 1° 精细调节 */
+  el.addEventListener("wheel", e => {
+    e.preventDefault();
+    const v = Math.max(0, Math.min(180, +el.value + (e.deltaY < 0 ? 1 : -1)));
+    el.value = v;
+    $(s.lab).textContent = v + "°";
+    servoSet(s.ch, v, true);
+  }, { passive: false });
+});
+
+/* 微调 / 中位按钮 */
+document.querySelectorAll(".srow button[data-rng]").forEach(b => {
   b.onclick = () => {
-    const a = b.dataset.tray;
-    $("s4").value = a; $("a4").textContent = a + "°";
-    api(`/api/servo?ch=4&a=${a}`);
+    const ch = SRV.find(x => x.rng === b.dataset.rng).ch;
+    const el = $(b.dataset.rng);
+    const v = b.dataset.mid ? CENTER[ch]
+                            : Math.max(0, Math.min(180, +el.value + (+b.dataset.d)));
+    el.value = v;
+    $(SRV.find(x => x.ch === ch).lab).textContent = v + "°";
+    servoSet(ch, v, true);
   };
 });
 
-/* ---- 阈值 ---- */
+/* 物料盘工位 */
+document.querySelectorAll("[data-tray]").forEach(b => {
+  b.onclick = () => {
+    const a = +b.dataset.tray;
+    syncServoUI(4, a);
+    servoSet(4, a, true);
+  };
+});
+
+/* ---- 协议切换 ---- */
+$("proto").onchange = e => api(`/servo_proto?mode=${e.target.value}`);
+
+/* ---- 360° 点动 ---- */
+const pCh = $("pCh"), pA = $("pA"), pD = $("pD"), pC = $("pC");
+function syncCenterUI() {
+  const ch = +pCh.value;
+  pC.value = CENTER[ch];
+  $("pCv").textContent = CENTER[ch];
+}
+pCh.onchange = syncCenterUI;
+pA.oninput = () => { $("pAv").textContent = pA.value + "°"; };
+pD.oninput = () => { $("pDv").textContent = pD.value + " ms"; };
+pC.addEventListener("pointerdown", () => { S.dragging = "pC"; });
+pC.oninput = () => { $("pCv").textContent = pC.value; };
+pC.onchange = () => {
+  S.dragging = null;
+  const ch = +pCh.value, v = +pC.value;
+  CENTER[ch] = v;
+  api(`/servo_center?ch=${ch}&a=${v}`);
+};
+$("pulseGo").onclick = () => {
+  const ch = +pCh.value;
+  api(`/servo_pulse?ch=${ch}&speed_angle=${pA.value}&duration_ms=${pD.value}&stop=${CENTER[ch]}`);
+  $("pulseInfo").textContent = `CH${ch} ${pA.value}° × ${pD.value}ms`;
+};
+$("pulseStop").onclick = () => {
+  const ch = +pCh.value;
+  servoSet(ch, CENTER[ch], true);
+  syncServoUI(ch, CENTER[ch]);
+  $("pulseInfo").textContent = `CH${ch} 停止`;
+};
+
+/* ---- 阈值 / 极性 / 顺序 ---- */
 const th = $("th"), inv = $("inv"), rev = $("rev");
-th.addEventListener("pointerdown", () => S.dragging = "th");
+th.addEventListener("pointerdown", () => { S.dragging = "th"; });
 th.addEventListener("input", () => { $("thv").textContent = Number(th.value).toFixed(2) + " V"; });
 th.addEventListener("change", () => {
   S.dragging = null;
-  api(`/api/line?th=${th.value}&inv=${inv.checked ? 1 : 0}&rev=${rev.checked ? 1 : 0}`);
+  api(`/thresh?th=${Number(th.value).toFixed(2)}`);
 });
 inv.onchange = () => api(`/api/line?inv=${inv.checked ? 1 : 0}`);
 rev.onchange = () => api(`/api/line?rev=${rev.checked ? 1 : 0}`);
 
 /* ---- PID ---- */
-const pidMap = [["kp","kpv",2],["ki","kiv",2],["kd","kdv",2],["base","basev",2],["om","omv",1],["acc","accv",0]];
+const pidMap = [["kp","kpv",2],["ki","kiv",2],["kd","kdv",2],["om","omv",1],["acc","accv",0]];
 pidMap.forEach(([id, lab, dec]) => {
   const el = $(id);
-  el.addEventListener("pointerdown", () => S.dragging = id);
+  el.addEventListener("pointerdown", () => { S.dragging = id; });
   el.addEventListener("input", () => {
-    const unit = id === "base" ? " m/s" : id === "om" ? " rad/s" : id === "acc" ? " 步/秒²" : "";
+    const unit = id === "om" ? " rad/s" : id === "acc" ? " 步/秒²" : "";
     $(lab).textContent = Number(el.value).toFixed(dec) + unit;
   });
   el.addEventListener("change", () => { S.dragging = null; sendPid(); });
@@ -277,7 +446,7 @@ function sendPid() {
   clearTimeout(pidTimer);
   pidTimer = setTimeout(() => {
     api(`/api/line?kp=${$("kp").value}&ki=${$("ki").value}&kd=${$("kd").value}` +
-        `&base=${$("base").value}&om=${$("om").value}&accel=${$("acc").value}`);
+        `&om=${$("om").value}&accel=${$("acc").value}`);
   }, 80);
 }
 
@@ -302,10 +471,10 @@ function render(j) {
   S.status = j;
   for (let i = 0; i < 8; i++) {
     const v = j.v[i];
-    bars[i].fill.style.height = Math.max(0, Math.min(100, v / 3.3 * 100)) + "%";
+    bars[i].fill.style.height = Math.max(0, Math.min(100, v / 5.0 * 100)) + "%";
     bars[i].val.textContent = v.toFixed(2);
     bars[i].el.classList.toggle("black", !!j.b[i]);
-    const m = (j.th / 3.3 * 100);
+    const m = (j.th / 5.0 * 100);
     bars[i].mark.style.bottom = Math.max(0, Math.min(100, m)) + "%";
   }
   $("seq").textContent = "seq " + j.seq;
@@ -326,16 +495,22 @@ function render(j) {
     $("inv").checked = !!j.inv;
     $("rev").checked = !!j.rev;
   }
+  if (S.dragging !== "cs") { $("cs").value = j.cs; $("csv").textContent = Math.round(j.cs) + " 步/秒"; }
+  if (S.dragging !== "ls") { $("ls").value = j.lsp; $("lsv").textContent = Math.round(j.lsp) + " 步/秒"; }
+
   if (S.dragging !== "kp") { $("kp").value = j.kp; $("kpv").textContent = j.kp.toFixed(2); }
   if (S.dragging !== "ki") { $("ki").value = j.ki; $("kiv").textContent = j.ki.toFixed(2); }
   if (S.dragging !== "kd") { $("kd").value = j.kd; $("kdv").textContent = j.kd.toFixed(2); }
-  if (S.dragging !== "base") { $("base").value = j.base; $("basev").textContent = j.base.toFixed(2) + " m/s"; }
   if (S.dragging !== "om") { $("om").value = j.om; $("omv").textContent = j.om.toFixed(1) + " rad/s"; }
   if (S.dragging !== "acc") { $("acc").value = j.acc; $("accv").textContent = j.acc.toFixed(0) + " 步/秒²"; }
 
   if (S.dragging !== "s0") { $("s0").value = j.srv[0]; $("a0").textContent = j.srv[0] + "°"; }
   if (S.dragging !== "s4") { $("s4").value = j.srv[1]; $("a4").textContent = j.srv[1] + "°"; }
   if (S.dragging !== "s8") { $("s8").value = j.srv[2]; $("a8").textContent = j.srv[2] + "°"; }
+
+  CENTER[0] = j.ctr[0]; CENTER[4] = j.ctr[1]; CENTER[8] = j.ctr[2];
+  if (S.dragging !== "pC") syncCenterUI();
+  if ($("proto").value !== String(j.proto)) $("proto").value = j.proto;
 
   $("srvbadge").textContent = j.srv_ok ? "LU9685 在线" : "LU9685 离线";
   $("srvbadge").className = "badge " + (j.srv_ok ? "ok" : "bad");

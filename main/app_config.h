@@ -79,6 +79,15 @@ extern "C" {
 #define MANUAL_CMD_TIMEOUT_MS   400         /* 遥控指令看门狗 */
 #define LIFT_JOG_TIMEOUT_MS     500         /* 升降点动看门狗 */
 
+/* 运行时可调的基础转速（单位：步/秒）
+ * 手动遥控 / 循迹基础航速统一读取 chassis 值，升降轴读取 lift 值。 */
+#define CHASSIS_BASE_SPEED_DEFAULT  450.0f
+#define CHASSIS_BASE_SPEED_MIN      100.0f
+#define CHASSIS_BASE_SPEED_MAX      1500.0f
+#define LIFT_SPEED_DEFAULT          400.0f
+#define LIFT_SPEED_MIN              100.0f
+#define LIFT_SPEED_MAX              1200.0f
+
 /* ==========================================================================
  * 五、传感器采样
  * ========================================================================== */

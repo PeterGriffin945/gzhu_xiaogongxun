@@ -37,8 +37,18 @@ chassis_mode_t chassis_get_mode(void);
 /** 手动速度指令，必须在 MANUAL_CMD_TIMEOUT_MS 内持续刷新，否则自动停车 */
 void chassis_set_velocity(float vx, float vy, float omega);
 
-/** 升降点动速度 (步/秒)，正数上升；同样带 500ms 看门狗 */
+/** 升降点动：只取符号（正=上升，负=下降），幅值由 lift_speed 决定；
+ *  同样带 500ms 看门狗 */
 void chassis_lift_jog(float steps_per_sec);
+
+/**
+ * @brief 设置运行时基础转速（步/秒）
+ *
+ * chassis_sps 决定手动遥控时四轮的最大轮速，以及循迹模式的基础前进速度；
+ * lift_sps 决定升降轴点动速度。超出范围自动限幅。
+ */
+void chassis_set_speeds(float chassis_sps, float lift_sps);
+void chassis_get_speeds(float *chassis_sps, float *lift_sps);
 
 /** 平滑停车：底盘与升降目标清零 */
 void chassis_stop(void);

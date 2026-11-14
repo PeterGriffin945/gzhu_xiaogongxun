@@ -16,6 +16,7 @@
 #include "chassis.h"
 #include "line_follow.h"
 #include "lu9685.h"
+#include "mecanum.h"
 #include "stepper.h"
 #include "web_page.h"
 #include "wifi_sta.h"
@@ -101,14 +102,19 @@ static esp_err_t status_handler(httpd_req_t *req)
         black[i] = line_follow_is_black(v[i]) ? 1 : 0;
     }
 
-    char buf[1200];
+    float chassis_sps = 0.0f, lift_sps = 0.0f;
+    chassis_get_speeds(&chassis_sps, &lift_sps);
+
+    char buf[1400];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"vx\":%.2f,\"vy\":%.2f,\"w\":%.2f,"
         "\"en\":[%d,%d],\"th\":%.2f,\"inv\":%d,\"rev\":%d,"
         "\"kp\":%.2f,\"ki\":%.2f,\"kd\":%.2f,\"base\":%.2f,\"om\":%.1f,\"acc\":%.0f,"
+        "\"cs\":%.0f,\"lsp\":%.0f,"
         "\"v\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f],"
         "\"b\":[%d,%d,%d,%d,%d,%d,%d,%d],"
-        "\"srv\":[%d,%d,%d],\"srv_ok\":%d,\"lift\":%.0f,\"err\":%.2f,\"ls\":%d,"
+        "\"srv\":[%d,%d,%d],\"srv_ok\":%d,\"proto\":%d,\"ctr\":[%d,%d,%d],"
+        "\"lift\":%.0f,\"err\":%.2f,\"ls\":%d,"
         "\"ws\":[%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 "],"
         "\"seq\":%" PRIu32 ",\"wifi\":%d,\"ip\":\"%s\"}",
         (int)st.mode, st.vx, st.vy, st.omega,
@@ -116,6 +122,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         stepper_lift_enabled() ? 1 : 0,
         p.threshold, p.black_high ? 1 : 0, p.reverse ? 1 : 0,
         p.kp, p.ki, p.kd, p.base_speed, p.max_omega, stepper_get_accel(),
+        chassis_sps, lift_sps,
         v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
         black[0], black[1], black[2], black[3],
         black[4], black[5], black[6], black[7],
@@ -123,6 +130,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         lu9685_get_angle(LU9685_CH_TRAY),
         lu9685_get_angle(LU9685_CH_GRIPPER),
         lu9685_available() ? 1 : 0,
+        (int)lu9685_get_protocol(),
+        lu9685_get_center(LU9685_CH_BASE),
+        lu9685_get_center(LU9685_CH_TRAY),
+        lu9685_get_center(LU9685_CH_GRIPPER),
         st.lift_sps, st.line_error, st.line_seen ? 1 : 0,
         st.wheel_steps[0], st.wheel_steps[1], st.wheel_steps[2], st.wheel_steps[3],
         seq, wifi_sta_connected() ? 1 : 0, wifi_sta_ip());
@@ -214,6 +225,100 @@ static esp_err_t servo_handler(httpd_req_t *req)
     return send_ok(req);
 }
 
+static esp_err_t servo_proto_handler(httpd_req_t *req)
+{
+    int mode = 0;
+    if (!query_int(req, "mode", &mode)) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"mode required\"}");
+    }
+    if (mode < 0 || mode > 2) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"mode=0|1|2\"}");
+    }
+    lu9685_set_protocol((uint8_t)mode);
+
+    /* 立即按新协议重发三路当前角度，方便现场对比哪种协议动得对 */
+    static const uint8_t chs[3] = { LU9685_CH_BASE, LU9685_CH_TRAY, LU9685_CH_GRIPPER };
+    for (int i = 0; i < 3; ++i) {
+        lu9685_set_angle(chs[i], lu9685_get_angle(chs[i]));
+    }
+    return send_ok(req);
+}
+
+static esp_err_t servo_pulse_handler(httpd_req_t *req)
+{
+    int ch = -1, angle = 90, dur_ms = 0, stop = -1;
+    if (!query_int(req, "ch", &ch) ||
+        !query_int(req, "speed_angle", &angle) ||
+        !query_int(req, "duration_ms", &dur_ms)) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"ch/speed_angle/duration_ms required\"}");
+    }
+    if (ch < 0 || ch >= 16) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"bad ch\"}");
+    }
+    if (dur_ms < 0) {
+        dur_ms = 0;
+    }
+    query_int(req, "stop", &stop);   /* 可选，缺省用该通道校准中位 */
+
+    if (!lu9685_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"ok\":0,\"msg\":\"LU9685 offline\"}");
+    }
+    esp_err_t err = lu9685_pulse_start((uint8_t)ch, (uint8_t)angle,
+                                       (uint32_t)dur_ms, stop);
+    if (err != ESP_OK) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"pulse failed\"}");
+    }
+    return send_ok(req);
+}
+
+static esp_err_t servo_center_handler(httpd_req_t *req)
+{
+    int ch = -1, a = 90;
+    if (!query_int(req, "ch", &ch) || !query_int(req, "a", &a)) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"ch & a required\"}");
+    }
+    if (ch < 0 || ch >= 16) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"bad ch\"}");
+    }
+    lu9685_set_center((uint8_t)ch, (uint8_t)a);
+    return send_ok(req);
+}
+
+static esp_err_t speed_handler(httpd_req_t *req)
+{
+    float cs = 0.0f, ls = 0.0f, f = 0.0f;
+    chassis_get_speeds(&cs, &ls);
+
+    bool has_cs = query_float(req, "chassis", &f);
+    if (has_cs) {
+        cs = f;
+    }
+    bool has_ls = query_float(req, "lift", &f);
+    if (has_ls) {
+        ls = f;
+    }
+    if (!has_cs && !has_ls) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"chassis/lift required\"}");
+    }
+    chassis_set_speeds(cs, ls);
+    return send_ok(req);
+}
+
+static esp_err_t thresh_handler(httpd_req_t *req)
+{
+    float th = 0.0f;
+    if (!query_float(req, "th", &th) && !query_float(req, "v", &th)) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"th required\"}");
+    }
+    line_params_t p;
+    line_follow_get_params(&p);
+    p.threshold = th;                /* 0.0 ~ 5.0V，line_follow_set_params 限幅 */
+    line_follow_set_params(&p);
+    return send_ok(req);
+}
+
 static esp_err_t line_handler(httpd_req_t *req)
 {
     line_params_t p;
@@ -241,6 +346,10 @@ static esp_err_t line_handler(httpd_req_t *req)
     }
     if (query_float(req, "base", &f)) {
         p.base_speed = f;
+        /* 兼容旧接口：m/s → 步/秒，写入运行时底盘航速 */
+        float cs = 0.0f, ls = 0.0f;
+        chassis_get_speeds(&cs, &ls);
+        chassis_set_speeds((float)mecanum_mps_to_steps(f), ls);
     }
     if (query_float(req, "om", &f)) {
         p.max_omega = f;
@@ -263,7 +372,7 @@ esp_err_t web_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 24;
     config.lru_purge_enable = true;
     config.keep_alive_enable = true;
     config.server_port = 80;
@@ -286,6 +395,12 @@ esp_err_t web_server_start(void)
         { .uri = "/api/servo",   .method = HTTP_GET, .handler = servo_handler },
         { .uri = "/api/line",    .method = HTTP_GET, .handler = line_handler },
         { .uri = "/api/stop",    .method = HTTP_GET, .handler = stop_handler },
+        { .uri = "/thresh",      .method = HTTP_GET, .handler = thresh_handler },
+        { .uri = "/speed",       .method = HTTP_GET, .handler = speed_handler },
+        { .uri = "/api/speed",   .method = HTTP_GET, .handler = speed_handler },
+        { .uri = "/servo_proto", .method = HTTP_GET, .handler = servo_proto_handler },
+        { .uri = "/servo_pulse", .method = HTTP_GET, .handler = servo_pulse_handler },
+        { .uri = "/servo_center",.method = HTTP_GET, .handler = servo_center_handler },
     };
 
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); ++i) {

@@ -34,7 +34,7 @@ void line_follow_init(void)
     s_params.kp = 0.90f;
     s_params.ki = 0.00f;
     s_params.kd = 0.00f;
-    s_params.threshold = 1.65f;
+    s_params.threshold = 4.00f;      /* 0 ~ 5.0V 全量程可调 */
     s_params.black_high = false;     /* 默认：黑线电压 < 阈值 */
     s_params.reverse = false;
     s_params.base_speed = 0.30f;
@@ -58,8 +58,9 @@ void line_follow_set_params(const line_params_t *in)
         return;
     }
     line_params_t p = *in;
-    if (p.threshold < 0.05f) {
-        p.threshold = 0.05f;
+    /* 阈值全量程 0.0 ~ 5.0V：ADS1115 保持 ±6.144V 量程，不做 3.3V 截断 */
+    if (p.threshold < 0.0f) {
+        p.threshold = 0.0f;
     } else if (p.threshold > 5.0f) {
         p.threshold = 5.0f;
     }
