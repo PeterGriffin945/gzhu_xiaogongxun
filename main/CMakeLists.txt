@@ -1,0 +1,24 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "stepper.c"
+        "mecanum.c"
+        "i2c_bus.c"
+        "ads1115.c"
+        "lu9685.c"
+        "line_follow.c"
+        "chassis.c"
+        "wifi_sta.c"
+        "web_server.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_gptimer
+        esp_driver_i2c
+        esp_timer
+        esp_http_server
+        esp_event
+        esp_netif
+        esp_wifi
+        nvs_flash
+)

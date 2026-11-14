@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "esp-idf": {
+      "type": "stdio",
+      "command": "powershell.exe",
+      "args": [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue; & 'C:\\Espressif\\tools\\Microsoft.v6.1.PowerShell_profile.ps1' *> $null; idf.py mcp-server"
+      ],
+      "env": {
+        "IDF_MCP_WORKSPACE_FOLDER": "E:\\xiaogongxun_codes\\helloworld"
+      }
+    }
+  }
+}
