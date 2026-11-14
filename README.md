@@ -14,6 +14,7 @@ helloworld/
 ├── CMakeLists.txt              # 顶层工程
 ├── sdkconfig.defaults          # FreeRTOS 1000Hz / 1.5MB app 分区等默认配置
 ├── README.md
+├── docs/DRIVER_API.md          # ★ 驱动接口手册（二次开发 / 其他 agent 调用）
 └── main/
     ├── CMakeLists.txt          # 组件源文件与依赖
     ├── main.c                  # 启动流程、任务初始化、健康检查
