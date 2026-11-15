@@ -67,6 +67,8 @@ static void default_config(competition_config_t *config)
             .base_place = 0,
             .gripper_open = 30,
             .gripper_closed = 80,
+            .base_speed_angle = ARM_BASE_SPEED_ANGLE_DEFAULT,
+            .base_sweep_ms = ARM_BASE_SWEEP_MS_DEFAULT,
             .base_settle_ms = 450,
             .gripper_settle_ms = 300,
             .lift_speed_sps = 400.0f,
@@ -100,6 +102,8 @@ static bool valid_config(const competition_config_t *config)
         m->base_stow > 180 || m->base_pick > 180 || m->base_tray > 180 ||
         m->base_place > 180 || m->gripper_open > 180 || m->gripper_closed > 180 ||
         m->gripper_open == m->gripper_closed || m->base_settle_ms > 5000 ||
+        m->base_speed_angle < 10 || m->base_speed_angle > 170 ||
+        m->base_sweep_ms < 200 || m->base_sweep_ms > 10000 ||
         m->gripper_settle_ms > 5000 || !isfinite(m->lift_speed_sps) ||
         m->lift_speed_sps < 100.0f || m->lift_speed_sps > 1200.0f) {
         return false;
@@ -578,12 +582,17 @@ esp_err_t competition_start(void)
                !ads1115_get_latest(volts, &seq)) {
         result = ESP_ERR_INVALID_STATE;
     } else if (tray_controller_busy() || manipulator_busy() ||
-               chassis_translation_active() || !chassis_lift_idle()) {
+               chassis_translation_active() || !chassis_lift_idle() ||
+               lu9685_pulse_active(LU9685_CH_BASE) ||
+               lu9685_pulse_active(LU9685_CH_TRAY) ||
+               lu9685_pulse_active(LU9685_CH_GRIPPER)) {
         /* 启动前必须所有执行器静止：手动循迹模式残留的轮速会在收臂阶段把车带跑。 */
         result = ESP_ERR_INVALID_STATE;
     }
     if (result == ESP_OK) {
         chassis_stop();          /* 强制回 MANUAL 并平滑停车，再开始收臂 */
+        /* 约定：启动前人工把底座摆到运输角，这里把它声明为逻辑基准。 */
+        lu9685_set_target_angle(LU9685_CH_BASE, s_config.manipulator.base_stow);
         apply_config();
         s_error = COMPETITION_ERROR_NONE;
         s_picked_count = 0;

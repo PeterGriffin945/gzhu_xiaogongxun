@@ -155,7 +155,8 @@ void  stepper_set_chassis_speeds(const float steps_per_sec[4]);   // 顺序 RR/R
 float stepper_get_speed(stepper_axis_t axis);                     // 当前实际速度（含斜坡）
 float stepper_get_target(stepper_axis_t axis);
 
-void  stepper_set_accel(float steps_per_sec2);                    // 默认 3000，范围 100~100000
+void  stepper_set_accel(float steps_per_sec2);                    // 默认 1200，范围 100~100000
+// 加减速为 S 形：接近 0 或目标速度时自动降低加速度（accel_scale 钟形系数）
 float stepper_get_accel(void);
 
 void  stepper_set_dir_invert(stepper_axis_t axis, bool invert);   // 运行时翻转 DIR 逻辑
@@ -283,6 +284,13 @@ esp_err_t lu9685_pulse_cancel(uint8_t channel);
 bool      lu9685_pulse_active(uint8_t channel);
 bool      lu9685_pulse_faulted(uint8_t channel);
 void      lu9685_pulse_stop_all(void);
+
+// 360° 连续舵机的“定时定位”：按逻辑角度差换算转动时间，到点自动停
+esp_err_t lu9685_move_timed(uint8_t channel, uint8_t target_angle,
+                            uint8_t speed_angle, uint32_t ms_per_180,
+                            int stop_angle, uint32_t *duration_ms_out);
+uint8_t   lu9685_get_target_angle(uint8_t channel);   // 逻辑角度，默认 90
+esp_err_t lu9685_set_target_angle(uint8_t channel, uint8_t angle);  // 仅声明姿态，不转动
 ```
 
 - 板子离线时：`lu9685_available()==false`，`set_angle` 直接返回
@@ -293,6 +301,13 @@ void      lu9685_pulse_stop_all(void);
   `pulse_faulted` 表示停止角连续写失败 3 次（粘滞故障，`pulse_start` 才会清除）。
 - 360° 连续舵机判定：`90` 附近停转，偏离越远越快。用 `pulse_start(ch, 60, 500, -1)`
   即是“正转约半秒”。
+- **`move_timed` 是连续舵机的角度控制入口**：内部维护每通道逻辑角度（默认 90），
+  `duration = |target - current| / 180 × ms_per_180`，正转用 `speed_angle`、
+  反转用 `180 - speed_angle`，到点自动写回中位；`speed_angle` 必须 1~179。
+  底座 CH0 的 `speed_angle` / `ms_per_180` 来自比赛标定（`bspeed` / `bsweep`）。
+- 手动点动（`pulse_start`）不更新逻辑角度；对 CH0 使用后逻辑基准会偏移，
+  开赛时 `competition_start()` 会用 `set_target_angle(CH0, bstow)` 重新声明基准，
+  因此启动前需人工把底座摆到运输角。
 
 ### 4.6 `line_follow.h` —— 8 路加权 PID
 
@@ -301,7 +316,8 @@ typedef struct {
     float kp;            // 默认 0.90
     float ki;            // 默认 0.00
     float kd;            // 默认 0.00
-    float threshold;     // 黑白阈值 V，默认 4.00，范围 0.0~5.0
+    float threshold;     // 黑白阈值 V，默认 4.00；后端限幅 0.0~5.0
+                         // 网页滑块仅开放 4.00~5.00（步进 0.01）用于精细标定
     bool  black_high;    // true = 电压高于阈值为黑线（极性反转）
     bool  reverse;       // true = 探头实际安装为 8→1，位置权重取反
     float base_speed;    // 旧字段 m/s；底盘已改用 chassis_base_speed
@@ -369,7 +385,7 @@ void chassis_get_status(chassis_status_t *out);
 
 **`chassis_set_velocity` 的重要语义（当前版本）**：
 `vx / vy / omega` 只决定**方向与各轮比例**，四轮步频的峰值会被归一化到
-`chassis_base_speed`（`chassis_set_speeds` 的第一个参数，默认 450 步/秒）。
+`chassis_base_speed`（`chassis_set_speeds` 的第一个参数，默认 300 步/秒）。
 因此 `(0, 0.45, 0)` 与 `(0, 1, 0)` 都是“全速前进”，`(0, 0, 0)` 才是停车。
 如果希望按 m/s 精确控制，请直接调用 `mecanum_*` + `stepper_set_chassis_speeds()`。
 
@@ -589,12 +605,14 @@ typedef struct {
     int32_t z_tray;             // 盘内取放 Z，步；0..z_max
     int32_t z_ground_place;     // 靶环放置 Z，步；0..z_max
     int32_t z_max;              // Z 最大软限位，步；100..100000
-    uint8_t base_stow;          // 底座运输角，0~180
+    uint8_t base_stow;          // 底座运输角，0~180（逻辑角，按时间定位）
     uint8_t base_pick;          // 底座地面抓取角，0~180
     uint8_t base_tray;          // 底座盘位角，0~180
     uint8_t base_place;         // 底座靶环角，0~180
     uint8_t gripper_open;       // 夹爪张开角，0~180，且 ≠ closed
     uint8_t gripper_closed;     // 夹爪闭合角，0~180，且 ≠ open
+    uint8_t base_speed_angle;   // CH0 连续舵机速度角 10~170（<90 正转）
+    uint16_t base_sweep_ms;     // CH0 逻辑 0~180° 行程时间 200~10000ms
     uint16_t base_settle_ms;    // 底座到位稳定，0~5000ms
     uint16_t gripper_settle_ms; // 夹爪到位稳定，0~5000ms
     float lift_speed_sps;       // Z 定步峰值速度，100~1200 步/秒
@@ -724,15 +742,17 @@ const char *competition_error_name(competition_error_t error);
 | `manipulator.z_tray` | 步 | 2500 | 0 … `z_max` |
 | `manipulator.z_ground_place` | 步 | 6000 | 0 … `z_max` |
 | `manipulator.z_max` | 步 | 10000 | 100 … 100000 |
-| `manipulator.base_stow` | ° | 90 | 0 … 180 |
-| `manipulator.base_pick` | ° | 0 | 0 … 180 |
-| `manipulator.base_tray` | ° | 180 | 0 … 180 |
-| `manipulator.base_place` | ° | 0 | 0 … 180 |
+| `manipulator.base_stow` | 逻辑° | 90 | 0 … 180 |
+| `manipulator.base_pick` | 逻辑° | 0 | 0 … 180 |
+| `manipulator.base_tray` | 逻辑° | 180 | 0 … 180 |
+| `manipulator.base_place` | 逻辑° | 0 | 0 … 180 |
 | `manipulator.gripper_open` | ° | 30 | 0 … 180，且 ≠ `gripper_closed` |
 | `manipulator.gripper_closed` | ° | 80 | 0 … 180，且 ≠ `gripper_open` |
+| `manipulator.base_speed_angle` | ° | 60 | 10 … 170（<90 正转） |
+| `manipulator.base_sweep_ms` | ms | 2400 | 200 … 10000 |
 | `manipulator.base_settle_ms` | ms | 450 | 0 … 5000 |
 | `manipulator.gripper_settle_ms` | ms | 300 | 0 … 5000 |
-| `manipulator.lift_speed_sps` | 步/秒 | 400 | 100 … 1200 |
+| `manipulator.lift_speed_sps` | 步/秒 | 300 | 100 … 1200 |
 | `material_target_cx` | px | 160 | 0 … 319（QVGA 宽 320） |
 | `material_target_cy` | px | 120 | 0 … 239（QVGA 高 240） |
 | `ring_target_cx` | px | 160 | 0 … 319 |
@@ -879,8 +899,8 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
   "mode":0, "vx":0.00, "vy":0.45, "w":0.00,
   "en":[1,0],
   "th":4.00, "inv":0, "rev":0,
-  "kp":0.90, "ki":0.00, "kd":0.00, "base":0.30, "om":3.0, "acc":3000,
-  "cs":450, "lsp":400,
+  "kp":0.90, "ki":0.00, "kd":0.00, "base":0.30, "om":3.0, "acc":1200,
+  "cs":300, "lsp":300,
   "v":[0.12,0.13,0.11,0.12,0.14,0.12,0.13,0.12],
   "b":[1,1,1,1,1,1,1,1],
   "srv":[90,90,90], "srv_ok":1, "proto":0, "ctr":[90,90,90],
@@ -926,7 +946,8 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
             "cx":0,"cy":0,"area":0,"conf":0,"age":-1},
   "cfg":{"zpick":6000,"ztray":2500,"zplace":6000,"zmax":10000,
          "bstow":90,"bpick":0,"btray":180,"bplace":0,"gopen":30,"gclose":80,
-         "bms":450,"gms":300,"lsps":400.0,"mcx":160,"mcy":120,"rcx":160,"rcy":120,
+         "bms":450,"gms":300,"bspeed":60,"bsweep":2400,"lsps":300.0,
+         "mcx":160,"mcy":120,"rcx":160,"rcy":120,
          "tol":8,"minconf":10,"maxiter":5,"xsign":1,"ysign":1,"nudge":3.00,"asps":200.0,
          "tspeed":60,"tms":500,"sblack":6,"sconfirm":2,"sclear":3,"srearm":3,"sinterval":800}
 }
@@ -1225,7 +1246,7 @@ ESP_ERROR_CHECK(competition_start());
 | 舵机角度 | 0~180 | 脉宽模式：`500 + angle × 2000/180` µs |
 | 视觉坐标/面积 | px | QVGA 320×240，小端 16 位 |
 | 采样电压 | V | `raw × 6.144 / 32768` |
-| 阈值 | V | 0.0~5.0，前端步进 0.05 |
+| 阈值 | V | 后端 0.0~5.0；网页滑块 4.00~5.00，步进 0.01 |
 | 对位微调 | mm | 1.0~50.0，默认 3.0 |
 | 定时/超时 | ms | 心跳 500，检测 80，链路 1500/2000，结果 400 |
 
@@ -1261,4 +1282,4 @@ ESP_ERROR_CHECK(competition_start());
 
 ---
 
-*最后更新：2026-11-15　固件 0xE6480（943232 字节，约 921 KiB），ESP-IDF v6.1.0 编译 0 warning。*
+*最后更新：2026-11-15　固件 0xE69C0（944576 字节，约 922 KiB），ESP-IDF v6.1.0 编译 0 warning。*

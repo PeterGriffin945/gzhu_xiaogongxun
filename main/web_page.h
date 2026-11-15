@@ -113,14 +113,14 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
     <h2>8 路循迹探头 <span id="seq">seq -</span></h2>
     <div class="sensors" id="sensors"></div>
     <div class="row"><label>判定阈值</label><b class="mono" id="thv">4.00 V</b></div>
-    <input type="range" id="th" min="0.0" max="5.0" step="0.05" value="4.00">
+    <input type="range" id="th" min="4.0" max="5.0" step="0.01" value="4.00">
     <div class="switch"><span>黑线为高电平（极性反转）</span>
       <input type="checkbox" id="inv"></div>
     <div class="switch"><span>探头安装顺序反转（8 → 1）</span>
       <input type="checkbox" id="rev"></div>
     <div class="row"><span class="badge" id="linestate">循迹 --</span>
       <span class="mono" id="errv">err 0.00</span></div>
-    <div class="hint">条形高度=电压(0~5V 满量程)，橙线=阈值；探头变红表示判定为黑线。编号 1 在最左、8 在最右。</div>
+    <div class="hint">条形高度=电压(0~5V 满量程)，橙线=阈值；探头变红表示判定为黑线。编号 1 在最左、8 在最右。阈值调节范围 4.00~5.00V，步进 0.01V，便于在该区间精细标定。</div>
   </section>
 
   <section class="card">
@@ -236,7 +236,8 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
 
     <div class="hint">
       滑块拖动时 30ms 节流实时下发；鼠标悬停滑块滚动滚轮可按 1° 微调。<br>
-      若舵机表现为"持续转动、角度无效"，多半是 360° 连续旋转舵机：把速度角调到 60/120 用点动控制转角，中位校准到实际停转点（85~95）。
+      CH0 底座与 CH4 物料盘是 360° 连续旋转舵机：滑块给的是“逻辑角度”，程序按角度差换算转动时间，到位自动停在中位，
+      不再一直转。速度角与 180° 用时可在"比赛自动流程 → 标定"里调整；中位校准到实际停转点（85~95）。
     </div>
   </section>
 
@@ -268,6 +269,8 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <label class="field">夹爪张开角<input type="number" data-cfg="gopen"></label>
         <label class="field">夹爪闭合角<input type="number" data-cfg="gclose"></label>
         <label class="field">底座稳定 ms<input type="number" data-cfg="bms"></label>
+        <label class="field">底座速度角（&lt;90 正转）<input type="number" data-cfg="bspeed"></label>
+        <label class="field">底座 180° 用时 ms<input type="number" data-cfg="bsweep"></label>
         <label class="field">夹爪稳定 ms<input type="number" data-cfg="gms"></label>
         <label class="field">Z 定步速度<input type="number" data-cfg="lsps"></label>
         <label class="field">物料基准 X<input type="number" data-cfg="mcx"></label>
@@ -291,7 +294,7 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       </div>
       <button id="cfgSave" class="primary" style="width:100%;margin-top:10px">保存并确认本次标定</button>
     </details>
-    <div class="hint">初始化顺序：低速点动校机械方向 → 设 Z 运输零点 → 对齐盘位并设 slot0 → 实测并保存标定 → 打开底盘/升降 EN → 启动。任何中止都会使 Z 与盘位基准失效，需重新确认。</div>
+    <div class="hint">初始化顺序：低速点动校机械方向 → 设 Z 运输零点 → 对齐盘位并设 slot0 → <b>把底座人工摆到运输角</b> → 实测并保存标定 → 打开底盘/升降 EN → 启动。任何中止都会使 Z、盘位与底座基准失效，需重新确认。</div>
     <div class="statusline" id="compMsg" style="margin-top:8px;color:var(--warn)"></div>
   </section>
 

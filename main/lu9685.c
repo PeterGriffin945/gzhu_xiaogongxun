@@ -35,6 +35,8 @@ static i2c_master_dev_handle_t s_dev;
 static uint8_t s_addr;
 static uint8_t s_angles[LU9685_MAX_CH];
 static uint8_t s_center[LU9685_MAX_CH];
+/* 连续旋转通道的逻辑角度：由定时转动累积，供“走多少度”换算使用。 */
+static uint8_t s_target[LU9685_MAX_CH];
 static volatile uint8_t s_proto = LU9685_PROTO_ANGLE;
 static portMUX_TYPE s_pulse_mux = portMUX_INITIALIZER_UNLOCKED;
 static lu9685_pulse_t s_pulse[LU9685_MAX_CH];
@@ -125,6 +127,7 @@ esp_err_t lu9685_init(void)
     for (int i = 0; i < LU9685_MAX_CH; ++i) {
         s_angles[i] = LU9685_DEFAULT_CENTER;
         s_center[i] = LU9685_DEFAULT_CENTER;
+        s_target[i] = LU9685_DEFAULT_CENTER;
         s_pulse[i].active = false;
         s_pulse[i].faulted = false;
     }
@@ -276,6 +279,60 @@ esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
     s_pulse[channel].faulted = false;
     s_pulse[channel].active = true;
     taskEXIT_CRITICAL(&s_pulse_mux);
+    return ESP_OK;
+}
+
+esp_err_t lu9685_move_timed(uint8_t channel, uint8_t target_angle,
+                            uint8_t speed_angle, uint32_t ms_per_180,
+                            int stop_angle, uint32_t *duration_ms_out)
+{
+    if (channel >= LU9685_MAX_CH) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (target_angle > 180) {
+        target_angle = 180;
+    }
+    if (speed_angle == 0 || speed_angle >= 180) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ms_per_180 == 0) {
+        ms_per_180 = ARM_BASE_SWEEP_MS_DEFAULT;
+    } else if (ms_per_180 > 60000U) {
+        ms_per_180 = 60000U;
+    }
+
+    int16_t delta = (int16_t)target_angle - (int16_t)s_target[channel];
+    if (delta == 0) {
+        if (duration_ms_out != NULL) {
+            *duration_ms_out = 0;
+        }
+        return ESP_OK;
+    }
+    uint32_t steps = (uint32_t)((delta > 0) ? delta : -delta);
+    uint32_t duration = (steps * ms_per_180 + 90U) / 180U;   /* 四舍五入 */
+    uint8_t run_speed = (delta > 0) ? speed_angle : (uint8_t)(180 - speed_angle);
+
+    esp_err_t err = lu9685_pulse_start(channel, run_speed, duration, stop_angle);
+    if (err == ESP_OK) {
+        s_target[channel] = target_angle;
+    }
+    if (duration_ms_out != NULL) {
+        *duration_ms_out = duration;
+    }
+    return err;
+}
+
+uint8_t lu9685_get_target_angle(uint8_t channel)
+{
+    return (channel < LU9685_MAX_CH) ? s_target[channel] : LU9685_DEFAULT_CENTER;
+}
+
+esp_err_t lu9685_set_target_angle(uint8_t channel, uint8_t angle)
+{
+    if (channel >= LU9685_MAX_CH) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_target[channel] = (angle > 180) ? 180 : angle;
     return ESP_OK;
 }
 

@@ -147,7 +147,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         chassis_sps, lift_sps,
         v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
         black[0], black[1], black[2], black[3], black[4], black[5], black[6], black[7],
-        lu9685_get_angle(LU9685_CH_BASE), lu9685_get_angle(LU9685_CH_TRAY),
+        lu9685_get_target_angle(LU9685_CH_BASE), lu9685_get_angle(LU9685_CH_TRAY),
         lu9685_get_angle(LU9685_CH_GRIPPER), lu9685_available() ? 1 : 0,
         (int)lu9685_get_protocol(), lu9685_get_center(LU9685_CH_BASE),
         lu9685_get_center(LU9685_CH_TRAY), lu9685_get_center(LU9685_CH_GRIPPER),
@@ -237,7 +237,29 @@ static esp_err_t servo_handler(httpd_req_t *req)
     if (!lu9685_available()) {
         return send_err(req, "{\"ok\":0,\"msg\":\"LU9685 offline\"}");
     }
-    esp_err_t err = lu9685_set_angle((uint8_t)ch, (uint8_t)((a < 0) ? 0 : (a > 180 ? 180 : a)));
+    if (a < 0) {
+        a = 0;
+    } else if (a > 180) {
+        a = 180;
+    }
+
+    esp_err_t err;
+    if (ch == LU9685_CH_BASE) {
+        /* CH0 是 360° 连续旋转舵机：按角度差定时转动，不能直接写角度。 */
+        competition_config_t cfg = { 0 };
+        competition_get_config(&cfg);
+        uint8_t speed = cfg.manipulator.base_speed_angle;
+        uint32_t sweep = cfg.manipulator.base_sweep_ms;
+        if (speed < 10 || speed > 170) {
+            speed = ARM_BASE_SPEED_ANGLE_DEFAULT;
+        }
+        if (sweep < 200 || sweep > 10000) {
+            sweep = ARM_BASE_SWEEP_MS_DEFAULT;
+        }
+        err = lu9685_move_timed((uint8_t)ch, (uint8_t)a, speed, sweep, -1, NULL);
+    } else {
+        err = lu9685_set_angle((uint8_t)ch, (uint8_t)a);
+    }
     return (err == ESP_OK) ? send_ok(req) : send_err(req, "{\"ok\":0,\"msg\":\"servo write failed\"}");
 }
 
@@ -395,7 +417,7 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         "\"vision\":{\"mode\":%d,\"color\":%d,\"detected\":%d,\"stable\":%d,\"cx\":%d,\"cy\":%d,\"area\":%d,\"conf\":%d,\"age\":%" PRId64 "},"
         "\"cfg\":{\"zpick\":%" PRId32 ",\"ztray\":%" PRId32 ",\"zplace\":%" PRId32 ",\"zmax\":%" PRId32 ","
         "\"bstow\":%d,\"bpick\":%d,\"btray\":%d,\"bplace\":%d,\"gopen\":%d,\"gclose\":%d,"
-        "\"bms\":%d,\"gms\":%d,\"lsps\":%.1f,\"mcx\":%d,\"mcy\":%d,\"rcx\":%d,\"rcy\":%d,"
+        "\"bms\":%d,\"gms\":%d,\"bspeed\":%d,\"bsweep\":%d,\"lsps\":%.1f,\"mcx\":%d,\"mcy\":%d,\"rcx\":%d,\"rcy\":%d,"
         "\"tol\":%d,\"minconf\":%d,\"maxiter\":%d,\"xsign\":%d,\"ysign\":%d,\"nudge\":%.2f,\"asps\":%.1f,"
         "\"tspeed\":%d,\"tms\":%" PRIu32 ",\"sblack\":%d,\"sconfirm\":%d,\"sclear\":%d,\"srearm\":%d,\"sinterval\":%" PRIu32 "}}",
         competition_state_name(st.state), competition_error_name(st.error), st.running ? 1 : 0,
@@ -414,7 +436,8 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         cfg.manipulator.z_max, cfg.manipulator.base_stow, cfg.manipulator.base_pick,
         cfg.manipulator.base_tray, cfg.manipulator.base_place, cfg.manipulator.gripper_open,
         cfg.manipulator.gripper_closed, cfg.manipulator.base_settle_ms,
-        cfg.manipulator.gripper_settle_ms, cfg.manipulator.lift_speed_sps,
+        cfg.manipulator.gripper_settle_ms, cfg.manipulator.base_speed_angle,
+        cfg.manipulator.base_sweep_ms, cfg.manipulator.lift_speed_sps,
         cfg.material_target_cx, cfg.material_target_cy, cfg.ring_target_cx, cfg.ring_target_cy,
         cfg.vision_tolerance_px, cfg.vision_min_confidence, cfg.max_align_iterations,
         cfg.vision_x_sign, cfg.vision_y_sign, cfg.align_nudge_mm, cfg.align_speed_sps,
@@ -491,6 +514,8 @@ static esp_err_t competition_config_handler(httpd_req_t *req)
     READ_CFG_INT("gclose", cfg.manipulator.gripper_closed);
     READ_CFG_INT("bms", cfg.manipulator.base_settle_ms);
     READ_CFG_INT("gms", cfg.manipulator.gripper_settle_ms);
+    READ_CFG_INT("bspeed", cfg.manipulator.base_speed_angle);
+    READ_CFG_INT("bsweep", cfg.manipulator.base_sweep_ms);
     READ_CFG_FLOAT("lsps", cfg.manipulator.lift_speed_sps);
     READ_CFG_INT("mcx", cfg.material_target_cx);
     READ_CFG_INT("mcy", cfg.material_target_cy);

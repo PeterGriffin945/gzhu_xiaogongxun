@@ -33,6 +33,9 @@ typedef struct {
     uint8_t base_place;
     uint8_t gripper_open;
     uint8_t gripper_closed;
+    /* CH0 为 360° 连续旋转舵机：用速度角 + 时间控制转角 */
+    uint8_t base_speed_angle;   /* <90 正转，>90 反转 */
+    uint16_t base_sweep_ms;     /* 逻辑 0~180° 行程时间 */
     uint16_t base_settle_ms;
     uint16_t gripper_settle_ms;
     float lift_speed_sps;

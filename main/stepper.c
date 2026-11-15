@@ -175,6 +175,27 @@ static float approach_speed(float current, float target, float step)
     return fmaxf(current - step, target);
 }
 
+/* 软加速系数：速度接近 0 或接近目标时降低加速度，形成 S 形曲线。
+ * 全步模式下这能明显减小起步/到位的冲击、振动和“咔哒”噪声。 */
+static float accel_scale(float current, float target)
+{
+    float magnitude = fmaxf(fabsf(current), fabsf(target));
+    if (magnitude < 1.0f) {
+        return 1.0f;
+    }
+    float ratio = fabsf(current) / magnitude;
+    if (ratio > 1.0f) {
+        ratio = 1.0f;
+    }
+    float bell = 4.0f * ratio * (1.0f - ratio);   /* 两端 0、中间 1 */
+    return 0.25f + 0.75f * bell;
+}
+
+static float approach_speed_smooth(float current, float target, float step)
+{
+    return approach_speed(current, target, step * accel_scale(current, target));
+}
+
 static void stepper_ramp_task(void *arg)
 {
     (void)arg;
@@ -227,7 +248,7 @@ static void stepper_ramp_task(void *arg)
                         set_direction = true;
                         cur = direction * fminf(desired_mag, POSITION_START_SPEED);
                     } else {
-                        cur = approach_speed(cur, desired, acc_step);
+                        cur = approach_speed_smooth(cur, desired, acc_step);
                     }
                 }
 
@@ -268,7 +289,7 @@ static void stepper_ramp_task(void *arg)
             } else if ((cur > 0.0f) != (tgt > 0.0f)) {
                 cur = approach_speed(cur, 0.0f, acc_step);
             } else {
-                cur = approach_speed(cur, tgt, acc_step);
+                cur = approach_speed_smooth(cur, tgt, acc_step);
             }
 
             taskENTER_CRITICAL(&s_move_mux);

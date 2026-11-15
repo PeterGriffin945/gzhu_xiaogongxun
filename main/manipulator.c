@@ -103,18 +103,33 @@ static esp_err_t start_servo(uint8_t channel, uint8_t angle, uint16_t settle_ms)
     return err;
 }
 
+/* CH0 底座是连续旋转舵机：按角度差换算转动时间，到点自动停在中位。 */
+static esp_err_t start_base(uint8_t angle, uint16_t settle_ms)
+{
+    uint32_t duration = 0;
+    esp_err_t err = lu9685_move_timed(LU9685_CH_BASE, angle,
+                                      s_config.base_speed_angle,
+                                      s_config.base_sweep_ms,
+                                      -1, &duration);
+    if (err == ESP_OK) {
+        s_wait_servo = true;
+        s_wait_until_ms = now_ms() + duration + settle_ms;
+    }
+    return err;
+}
+
 static esp_err_t start_action(manipulator_action_t action)
 {
     s_wait_servo = false;
     switch (action) {
         case ACTION_BASE_STOW:
-            return start_servo(LU9685_CH_BASE, s_config.base_stow, s_config.base_settle_ms);
+            return start_base(s_config.base_stow, s_config.base_settle_ms);
         case ACTION_BASE_PICK:
-            return start_servo(LU9685_CH_BASE, s_config.base_pick, s_config.base_settle_ms);
+            return start_base(s_config.base_pick, s_config.base_settle_ms);
         case ACTION_BASE_TRAY:
-            return start_servo(LU9685_CH_BASE, s_config.base_tray, s_config.base_settle_ms);
+            return start_base(s_config.base_tray, s_config.base_settle_ms);
         case ACTION_BASE_PLACE:
-            return start_servo(LU9685_CH_BASE, s_config.base_place, s_config.base_settle_ms);
+            return start_base(s_config.base_place, s_config.base_settle_ms);
         case ACTION_GRIPPER_OPEN:
             return start_servo(LU9685_CH_GRIPPER, s_config.gripper_open, s_config.gripper_settle_ms);
         case ACTION_GRIPPER_CLOSED:

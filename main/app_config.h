@@ -66,8 +66,8 @@ extern "C" {
  * ========================================================================== */
 #define STEPPER_TICK_HZ         20000       /* 50us 硬件定时器 */
 #define STEPPER_TICK_US         50
-#define STEPPER_START_SPEED     200.0f      /* 起步死区跨越速度：步/秒 */
-#define STEPPER_DEFAULT_ACCEL   3000.0f     /* 默认加速度：步/秒² */
+#define STEPPER_START_SPEED     60.0f       /* 起步速度：越低越柔和，但过低会共振 */
+#define STEPPER_DEFAULT_ACCEL   1200.0f     /* 默认加速度：步/秒²（越低越平顺） */
 #define STEPPER_MAX_SPEED       8000.0f     /* 单轴限速：步/秒 */
 #define STEPPER_MAX_ACCEL       100000.0f
 #define STEPPER_MIN_ACCEL       100.0f
@@ -89,12 +89,17 @@ extern "C" {
 
 /* 运行时可调的基础转速（单位：步/秒）
  * 手动遥控 / 循迹基础航速统一读取 chassis 值，升降轴读取 lift 值。 */
-#define CHASSIS_BASE_SPEED_DEFAULT  450.0f
+#define CHASSIS_BASE_SPEED_DEFAULT  300.0f
 #define CHASSIS_BASE_SPEED_MIN      100.0f
 #define CHASSIS_BASE_SPEED_MAX      1500.0f
-#define LIFT_SPEED_DEFAULT          400.0f
+#define LIFT_SPEED_DEFAULT          300.0f
 #define LIFT_SPEED_MIN              100.0f
 #define LIFT_SPEED_MAX              1200.0f
+
+/* 底座 CH0 是 360° 连续旋转舵机：用“速度角 + 持续时间”控制转角。
+ * 速度角 <90 正转、>90 反转；sweep 为逻辑 0~180° 行程所需时间。 */
+#define ARM_BASE_SPEED_ANGLE_DEFAULT 60
+#define ARM_BASE_SWEEP_MS_DEFAULT    2400U
 
 /* ==========================================================================
  * 五、传感器采样
