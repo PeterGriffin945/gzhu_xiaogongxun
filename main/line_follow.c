@@ -111,12 +111,19 @@ float line_follow_update(const float v[8], float dt, bool *line_seen, float *err
         dt = 0.1f;
     }
 
-    /* 1. 归一化权重：只有明显处于黑线电平的探头才参与加权 */
+    /* 1. 归一化权重：只有明显处于黑线电平的探头才参与加权。
+       权重跨度不能直接取阈值（4V 阈值会把正常压线权重压到很小，
+       导致界面显示黑线但 PID 认为“丢线”）；按阈值 1/4 且至少 0.5V。 */
     float sum_w = 0.0f;
     float sum_wp = 0.0f;
-    const float span = (p.threshold > 0.2f) ? p.threshold : 0.2f;
+    bool any_black = false;
+    const float span = fmaxf(0.5f, p.threshold * 0.25f);
 
     for (int i = 0; i < LINE_SENSOR_COUNT; ++i) {
+        bool black = p.black_high ? (v[i] > p.threshold) : (v[i] < p.threshold);
+        if (black) {
+            any_black = true;
+        }
         float d = p.black_high ? (v[i] - p.threshold) : (p.threshold - v[i]);
         float w = d / span;
         if (w < 0.0f) {
@@ -139,7 +146,9 @@ float line_follow_update(const float v[8], float dt, bool *line_seen, float *err
             s_lost_since_us = now;
         }
         if (line_seen != NULL) {
-            *line_seen = false;   /* 仅用于界面提示，不再触发停车 */
+            /* 与页面 8 路黑白判定保持一致：只要有一路判黑就算“看到线”，
+               不能因为权重低于死区就显示丢线。 */
+            *line_seen = any_black;
         }
         if (error_out != NULL) {
             *error_out = s_last_error;

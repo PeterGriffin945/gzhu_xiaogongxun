@@ -3,7 +3,7 @@
 基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xE6BF0（945136 字节，约 923 KiB），2MB Flash 的 1500K app 分区剩余 38%。
+> 固件 0xE6CD0（945360 字节，约 923 KiB），2MB Flash 的 1500K app 分区剩余 38%。
 
 ---
 

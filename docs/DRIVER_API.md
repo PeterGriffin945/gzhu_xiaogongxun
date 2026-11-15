@@ -336,7 +336,11 @@ float line_follow_get_error(void);
 语义：
 
 - 探头位置 `-3.5 … +3.5`，误差 >0 表示黑线偏右，输出 `omega = -PID(error)`（顺时针修正）。
-- 丢线时**不停车**：返回上一次的 ω 并保持基础航速继续前进，`line_seen` 仅作界面提示。
+- 丢线时**不停车**：返回上一次的 ω 并保持基础航速继续前进。
+  `line_seen` 与页面 8 路黑白判定使用同一规则：**任一路判黑即为 true**，
+  仅作界面提示，不触发停车。
+- 权重跨度按 `max(0.5V, threshold/4)` 归一化，避免高阈值（4~5V）时权重被压得
+  过小、界面显示黑线但 PID 认为丢线。
 - 积分限幅 ±5。`line_follow_update` 由 `chassis` 任务在 100 Hz 中调用，**不要在其他任务重复调用**。
 - `line_follow_set_params` 会对非有限值直接忽略，并对阈值/ω 上限限幅。
 
@@ -1282,4 +1286,4 @@ ESP_ERROR_CHECK(competition_start());
 
 ---
 
-*最后更新：2026-11-15　固件 0xE6BF0（945136 字节，约 923 KiB），ESP-IDF v6.1.0 编译 0 warning。*
+*最后更新：2026-11-15　固件 0xE6CD0（945360 字节，约 923 KiB），ESP-IDF v6.1.0 编译 0 warning。*

@@ -583,8 +583,14 @@ function render(j) {
   }
   $("seq").textContent = "seq " + j.seq;
   $("errv").textContent = "err " + j.err.toFixed(2);
-  $("linestate").textContent = j.mode === 1 ? (j.ls ? "循迹：在线" : "循迹：丢线（保持行驶）") : "循迹：未启用";
-  $("linestate").className = "badge " + (j.mode === 1 ? (j.ls ? "ok" : "bad") : "");
+  const anyBlack = j.b.some(Boolean);
+  if (j.mode === 1) {
+    $("linestate").textContent = j.ls ? "循迹：在线" : "循迹：未检测到线";
+    $("linestate").className = "badge " + (j.ls ? "ok" : "bad");
+  } else {
+    $("linestate").textContent = anyBlack ? "手动 · 探头检测到黑线" : "手动 · 未检测到黑线";
+    $("linestate").className = "badge";
+  }
 
   const modeName = j.mode === 1 ? "PID 循迹" : (j.mode === 2 ? "定步平移" : "手动");
   $("modebadge").textContent = modeName;
