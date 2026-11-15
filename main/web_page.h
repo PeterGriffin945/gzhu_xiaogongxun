@@ -95,6 +95,7 @@ padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
 .field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dim)}
 .field input{width:100%;background:#0a121a;color:var(--fg);border:1px solid #273a4c;border-radius:8px;padding:8px;font-family:inherit}
 .statusline{font-size:12px;line-height:1.8;color:#b7c6d6;word-break:break-word}
+.pidbox{border-top:1px solid var(--line);margin-top:10px;padding-top:2px}
 .slots{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}
 .slot{padding:7px;border:1px solid var(--line);border-radius:8px;text-align:center;font-size:11px;color:var(--dim)}
 .slot.current{border-color:var(--acc);color:var(--acc)}
@@ -110,7 +111,7 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
 <main>
 
   <section class="card">
-    <h2>8 路循迹探头 <span id="seq">seq -</span></h2>
+    <h2>循迹探头 &amp; PID 调参 <span id="seq">seq -</span></h2>
     <div class="sensors" id="sensors"></div>
     <div class="row"><label>判定阈值</label><b class="mono" id="thv">4.00 V</b></div>
     <input type="range" id="th" min="4.0" max="5.0" step="0.01" value="4.00">
@@ -120,7 +121,31 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <input type="checkbox" id="rev"></div>
     <div class="row"><span class="badge" id="linestate">循迹 --</span>
       <span class="mono" id="errv">err 0.00</span></div>
-    <div class="hint">条形高度=电压(0~5V 满量程)，橙线=阈值；探头变红表示判定为黑线。编号 1 在最左、8 在最右。阈值调节范围 4.00~5.00V，步进 0.01V，便于在该区间精细标定。</div>
+
+    <div class="pidbox">
+      <div class="row" style="margin:10px 0 6px">
+        <span class="badge" id="pidLine">循迹 --</span>
+        <span class="mono">err <b id="pidErr" style="color:var(--acc)">0.00</b></span>
+        <span class="mono">ω <b id="pidW" style="color:var(--acc)">0.00</b></span>
+      </div>
+      <div class="slider"><div class="top"><span>Kp 比例</span><b id="kpv">0.60</b></div>
+        <input type="range" id="kp" min="0" max="5" step="0.05" value="0.6"></div>
+      <div class="slider"><div class="top"><span>Ki 积分</span><b id="kiv">0.00</b></div>
+        <input type="range" id="ki" min="0" max="2" step="0.01" value="0"></div>
+      <div class="slider"><div class="top"><span>Kd 微分</span><b id="kdv">0.15</b></div>
+        <input type="range" id="kd" min="0" max="1" step="0.01" value="0.15"></div>
+      <div class="slider"><div class="top"><span>修正角速度上限 ω</span><b id="omv">1.5 rad/s</b></div>
+        <input type="range" id="om" min="0" max="5" step="0.1" value="1.5"></div>
+      <div class="slider"><div class="top"><span>加速度（5 轴共用）</span><b id="accv">1200 步/秒²</b></div>
+        <input type="range" id="acc" min="500" max="20000" step="100" value="1200"></div>
+      <div class="btnrow" style="margin-top:6px">
+        <button id="saveTune" class="primary">💾 立即保存到 Flash</button>
+      </div>
+      <div class="statusline" id="saveMsg" style="margin-top:6px;color:var(--ok)"></div>
+      <div class="hint">条形高度=电压(0~5V 满量程)，橙线=阈值；探头变红表示判定为黑线。编号 1 在最左、8 在最右。
+        阈值 4.00~5.00V（步进 0.01V）。Kp 过大会左右摆，先加 Kd 抑制；Ki 一般保持 0。
+        转向角速度有 6 rad/s² 斜率限制，避免猛打方向过冲。参数修改后约 2 秒自动保存，下次上电自动加载。</div>
+    </div>
   </section>
 
   <section class="card">
@@ -296,26 +321,6 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
     </details>
     <div class="hint">初始化顺序：低速点动校机械方向 → 设 Z 运输零点 → 对齐盘位并设 slot0 → <b>把底座人工摆到运输角</b> → 实测并保存标定 → 打开底盘/升降 EN → 启动。任何中止都会使 Z、盘位与底座基准失效，需重新确认。</div>
     <div class="statusline" id="compMsg" style="margin-top:8px;color:var(--warn)"></div>
-  </section>
-
-  <section class="card">
-    <h2>循迹 PID 调参 <span>实时生效</span></h2>
-    <div class="row" style="margin:-2px 0 8px">
-      <span class="badge" id="pidLine">循迹 --</span>
-      <span class="mono">err <b id="pidErr" style="color:var(--acc)">0.00</b></span>
-      <span class="mono">ω <b id="pidW" style="color:var(--acc)">0.00</b></span>
-    </div>
-    <div class="slider"><div class="top"><span>Kp 比例</span><b id="kpv">0.60</b></div>
-      <input type="range" id="kp" min="0" max="5" step="0.05" value="0.6"></div>
-    <div class="slider"><div class="top"><span>Ki 积分</span><b id="kiv">0.00</b></div>
-      <input type="range" id="ki" min="0" max="2" step="0.01" value="0"></div>
-    <div class="slider"><div class="top"><span>Kd 微分</span><b id="kdv">0.15</b></div>
-      <input type="range" id="kd" min="0" max="1" step="0.01" value="0.15"></div>
-    <div class="slider"><div class="top"><span>修正角速度上限 ω</span><b id="omv">1.5 rad/s</b></div>
-      <input type="range" id="om" min="0" max="5" step="0.1" value="1.5"></div>
-    <div class="slider"><div class="top"><span>加速度（5 轴共用）</span><b id="accv">1200 步/秒²</b></div>
-      <input type="range" id="acc" min="500" max="20000" step="100" value="1200"></div>
-    <div class="hint">误差范围 ±3.5（探头间距）。转向角速度有 6 rad/s² 的斜率限制，避免猛打方向过冲。先调 Kp 到轻微摆动，再加 Kd 抑制；Ki 一般保持 0。循迹基础速度在"运动控制"里的底盘航速。</div>
   </section>
 
 </main>
@@ -585,6 +590,12 @@ pidMap.forEach(([id, lab, dec, unit]) => {
   });
   el.addEventListener("change", () => { S.dragging = null; sendPidNow(); });
 });
+
+$("saveTune").onclick = async () => {
+  const j = await api("/settings?save=1");
+  $("saveMsg").textContent = j.ok ? "已保存到 Flash，下次上电自动加载"
+                                  : (j.msg || "保存失败");
+};
 
 /* ---- 渲染 ---- */
 const names = ["RR","RF","LF","LR"];

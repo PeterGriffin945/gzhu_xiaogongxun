@@ -23,6 +23,7 @@
 #include "k230_link.h"
 #include "line_follow.h"
 #include "lu9685.h"
+#include "settings.h"
 #include "stepper.h"
 #include "web_server.h"
 #include "wifi_sta.h"
@@ -75,6 +76,11 @@ void app_main(void)
 
     line_follow_init();
     ESP_ERROR_CHECK(chassis_init());
+
+    /* 从 NVS 恢复上次保存的 PID/阈值/速度/舵机校准 */
+    if (settings_init() != ESP_OK) {
+        ESP_LOGW(TAG, "settings storage unavailable, using defaults");
+    }
 
     /* K230 链路失败只禁止自动比赛，不影响网页手动排障。 */
     if (k230_link_init() != ESP_OK) {

@@ -886,6 +886,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动 |
 | `/servo_center` | `ch` `a` | 校准中位停止值 |
 | `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
+| `/settings` | `save=1` | 立即保存调参到 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（见 4.14.2） |
 | `/api/competition/cmd` | `cmd=start\|abort\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`；`tray_to` 另需 `slot=0..5` | 比赛命令 |
 | `/api/competition/config` | 见 4.12.1 的字段名；`confirm=1` 同时确认 | 保存/确认标定 |
@@ -983,6 +984,31 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `vision.conf` | 置信度 % |
 | `vision.age` | 结果年龄 ms；无结果为 -1 |
 | `cfg.*` | 当前标定值，字段名与 `/api/competition/config` 一致 |
+
+### 4.15 `settings.h` —— 调参参数持久化
+
+```c
+esp_err_t settings_init(void);        // 上电调用：加载 NVS 并应用到各模块
+void      settings_request_save(void); // 参数变化后调用（约 2s 防抖后自动保存）
+esp_err_t settings_save_now(void);     // 立即保存
+bool      settings_last_save_ok(void);
+```
+
+持久化内容（NVS 命名空间 `tuning`，键 `blob`，带 magic/version）：
+
+- 循迹：`kp / ki / kd / threshold / max_omega / black_high / reverse`
+- 步进：`accel`
+- 底盘：`chassis_sps / lift_sps`
+- 舵机：协议模式、CH0/CH4/CH8 中位校准
+
+规则：
+
+- `settings_init()` 必须在 `line_follow_init()`、`chassis_init()`、`lu9685_init()`
+  之后调用；无保存数据时保持各模块默认值。
+- 网页调用 `/thresh`、`/api/line`、`/speed`、`/servo_proto`、`/servo_center`
+  会自动标记保存；**自动比赛配置（competition_config）不在本 blob 内**，
+  仍按比赛卡片流程每次确认。
+- 保存值经过各 setter 的限幅与 `isfinite` 检查，损坏/版本不符的 blob 会被忽略。
 
 ---
 
@@ -1287,4 +1313,4 @@ ESP_ERROR_CHECK(competition_start());
 
 ---
 
-*最后更新：2026-11-15　固件 0xE7190（946576 字节，约 924 KiB），ESP-IDF v6.1.0 编译 0 warning。*
+*最后更新：2026-11-15　固件 0xE79E0（948704 字节，约 927 KiB），ESP-IDF v6.1.0 编译 0 warning。*

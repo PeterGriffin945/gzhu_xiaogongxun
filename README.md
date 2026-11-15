@@ -3,7 +3,7 @@
 基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xE7190（946576 字节，约 924 KiB），2MB Flash 的 1500K app 分区剩余 38%。
+> 固件 0xE79E0（948704 字节，约 927 KiB），2MB Flash 的 1500K app 分区剩余 38%。
 
 ---
 
@@ -38,6 +38,7 @@ helloworld/
     ├── tray_controller.h / .c  # 6 工位物料盘分度与颜色台账
     ├── manipulator.h / .c      # 升降 + 底座 + 夹爪动作脚本
     ├── competition.h / .c      # 自动比赛状态机、标定与安全约束
+    ├── settings.h / .c         # 调参参数 NVS 持久化（PID/阈值/速度/舵机校准）
     ├── wifi_sta.h / .c         # Wi-Fi STA + 断线重连 + 关闭省电
     ├── web_server.h / .c       # HTTP API
     └── web_page.h              # 内嵌单页 HTML/JS 控制台（含比赛卡片）
@@ -362,6 +363,9 @@ idf.py -p COM18 flash monitor
 - **360° 点动**：选择通道 → 设速度角（<90 正转，>90 反转）→ 设持续时间，
   点"点动"后到点自动停止；中位停止值可校准到 85~95。
 - **阈值 4.00~5.00V（步进 0.01V）/ 极性 / PID / 加速度**：实时生效。
+- **参数保存**：PID、阈值、极性、探头顺序、加速度、底盘/升降速度、舵机协议与
+  中位校准修改后约 **2 秒自动写入 NVS**；也可点 PID 卡片里的“立即保存到 Flash”。
+  下次上电自动加载，不必重新调参。
 
 ### 7.1 比赛卡片使用顺序
 
@@ -402,6 +406,7 @@ idf.py -p COM18 flash monitor
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动，到点回中位 |
 | `/servo_center` | `ch` `a` | 校准该通道中位停止值（建议 85~95） |
 | `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
+| `/settings` | `save=1` | 立即把 PID/阈值/速度/舵机校准写入 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（状态机、零点、K230、视觉、标定） |
 | `/api/competition/cmd` | `cmd=start\|abort\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`；`tray_to` 另需 `slot=0..5` | 比赛命令 |
 | `/api/competition/config` | `zpick ztray zplace zmax bstow bpick btray bplace gopen gclose bms gms lsps mcx mcy rcx rcy tol minconf maxiter xsign ysign nudge asps tspeed tms sblack sconfirm sclear srearm sinterval`，可选 `confirm=1` | 保存标定并可选确认 |

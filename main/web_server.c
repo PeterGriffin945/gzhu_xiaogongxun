@@ -19,6 +19,7 @@
 #include "line_follow.h"
 #include "lu9685.h"
 #include "mecanum.h"
+#include "settings.h"
 #include "stepper.h"
 #include "web_page.h"
 #include "wifi_sta.h"
@@ -284,6 +285,7 @@ static esp_err_t servo_proto_handler(httpd_req_t *req)
     for (int i = 0; i < 3; ++i) {
         lu9685_set_angle(chs[i], lu9685_get_angle(chs[i]));
     }
+    settings_request_save();
     return send_ok(req);
 }
 
@@ -325,6 +327,7 @@ static esp_err_t servo_center_handler(httpd_req_t *req)
         a = 180;
     }
     lu9685_set_center((uint8_t)ch, (uint8_t)a);
+    settings_request_save();
     return send_ok(req);
 }
 
@@ -347,6 +350,7 @@ static esp_err_t speed_handler(httpd_req_t *req)
         return send_err(req, "{\"ok\":0,\"msg\":\"chassis/lift required\"}");
     }
     chassis_set_speeds(cs, ls);
+    settings_request_save();
     return send_ok(req);
 }
 
@@ -363,6 +367,7 @@ static esp_err_t thresh_handler(httpd_req_t *req)
     line_follow_get_params(&p);
     p.threshold = th;
     line_follow_set_params(&p);
+    settings_request_save();
     return send_ok(req);
 }
 
@@ -390,6 +395,7 @@ static esp_err_t line_handler(httpd_req_t *req)
     if (query_float(req, "om", &f)) p.max_omega = f;
     if (query_float(req, "accel", &f)) stepper_set_accel(f);
     line_follow_set_params(&p);
+    settings_request_save();
     return send_ok(req);
 }
 
@@ -399,6 +405,20 @@ static esp_err_t stop_handler(httpd_req_t *req)
     lu9685_pulse_stop_all();
     competition_abort(COMPETITION_ERROR_MANUAL_STOP);
     return send_ok(req);
+}
+
+static esp_err_t settings_handler(httpd_req_t *req)
+{
+    if (!manual_allowed(req)) {
+        return ESP_OK;
+    }
+    int save = 0;
+    if (!query_int(req, "save", &save) || save == 0) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"save=1 required\"}");
+    }
+    esp_err_t err = settings_save_now();
+    return (err == ESP_OK) ? send_ok(req)
+                           : send_err(req, "{\"ok\":0,\"msg\":\"save failed\"}");
 }
 
 static esp_err_t competition_status_handler(httpd_req_t *req)
@@ -581,6 +601,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/competition", .method = HTTP_GET, .handler = competition_status_handler },
         { .uri = "/api/competition/cmd", .method = HTTP_GET, .handler = competition_command_handler },
         { .uri = "/api/competition/config", .method = HTTP_GET, .handler = competition_config_handler },
+        { .uri = "/settings", .method = HTTP_GET, .handler = settings_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); ++i) {
         err = httpd_register_uri_handler(server, &uris[i]);
