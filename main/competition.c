@@ -23,7 +23,6 @@
 #define COMPETITION_BRAKE_TIMEOUT_MS 1800
 #define COMPETITION_BRAKE_MARGIN_MS 800
 #define COMPETITION_SENSOR_TIMEOUT_MS 500
-#define COMPETITION_LINE_LOST_TIMEOUT_MS 3000
 
 static SemaphoreHandle_t s_lock;
 static competition_config_t s_config;
@@ -45,7 +44,6 @@ static int64_t s_run_started_ms;
 static int64_t s_vision_after_ms;
 static uint32_t s_sensor_seq;
 static int64_t s_sensor_changed_ms;
-static int64_t s_line_seen_ms;
 
 static int64_t now_ms(void)
 {
@@ -194,7 +192,6 @@ static bool enter_state(void)
             station_detector_reset(&s_station, now_ms());
             s_sensor_seq = ads1115_get_seq();
             s_sensor_changed_ms = now_ms();
-            s_line_seen_ms = now_ms();
             chassis_set_mode(CHASSIS_MODE_LINE);
             break;
         case COMPETITION_SOURCE_IDENTIFY:
@@ -259,16 +256,6 @@ static void update_travel(bool source)
         s_sensor_seq = seq;
         s_sensor_changed_ms = now_ms();
     } else if (now_ms() - s_sensor_changed_ms > COMPETITION_SENSOR_TIMEOUT_MS) {
-        abort_locked(COMPETITION_ERROR_SENSOR);
-        return;
-    }
-
-    /* 丢线保护：循迹停车后若长时间看不到线，不要空等到 6 分钟全局超时。 */
-    chassis_status_t chassis_st;
-    chassis_get_status(&chassis_st);
-    if (chassis_st.line_seen) {
-        s_line_seen_ms = now_ms();
-    } else if (now_ms() - s_line_seen_ms > COMPETITION_LINE_LOST_TIMEOUT_MS) {
         abort_locked(COMPETITION_ERROR_SENSOR);
         return;
     }

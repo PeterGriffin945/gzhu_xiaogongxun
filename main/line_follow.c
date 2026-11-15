@@ -12,7 +12,6 @@
 
 #include "app_config.h"
 
-#define LOST_GRACE_US     150000      /* 丢线后保持上次转向的时间 */
 #define WEIGHT_DEADBAND   0.05f
 #define LOST_WEIGHT_SUM   0.10f
 
@@ -132,22 +131,18 @@ float line_follow_update(const float v[8], float dt, bool *line_seen, float *err
         sum_wp += w * (p.reverse ? -s_position[i] : s_position[i]);
     }
 
-    /* 2. 丢线处理：短时间内保持上一次转向，超时停车 */
+    /* 2. 丢线处理：不减速、不停车，保持上一次转向继续前进，直到重新压线。
+         这样赛道有断线/反光时车辆不会突然停住。 */
     if (sum_w < LOST_WEIGHT_SUM) {
         int64_t now = esp_timer_get_time();
         if (s_lost_since_us == 0) {
             s_lost_since_us = now;
         }
         if (line_seen != NULL) {
-            *line_seen = (now - s_lost_since_us) < LOST_GRACE_US;
+            *line_seen = false;   /* 仅用于界面提示，不再触发停车 */
         }
         if (error_out != NULL) {
             *error_out = s_last_error;
-        }
-        if ((now - s_lost_since_us) >= LOST_GRACE_US) {
-            s_integral = 0.0f;
-            s_last_omega = 0.0f;
-            return 0.0f;
         }
         return s_last_omega;
     }

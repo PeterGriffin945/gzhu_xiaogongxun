@@ -22,6 +22,7 @@
 #define CONTROL_PERIOD_MS 10
 #define SENSOR_STALE_US 120000
 
+static const char *TAG = "chassis";
 static volatile chassis_mode_t s_mode = CHASSIS_MODE_MANUAL;
 static volatile float s_cmd_vx;
 static volatile float s_cmd_vy;
@@ -351,6 +352,7 @@ void chassis_set_speeds(float chassis_sps, float lift_sps)
     s_base_sps = clampf(chassis_sps, CHASSIS_BASE_SPEED_MIN, CHASSIS_BASE_SPEED_MAX);
     s_lift_sps = clampf(lift_sps, LIFT_SPEED_MIN, LIFT_SPEED_MAX);
     taskEXIT_CRITICAL(&s_control_mux);
+    ESP_LOGI(TAG, "speeds chassis=%.0f lift=%.0f sps", s_base_sps, s_lift_sps);
 }
 
 void chassis_get_speeds(float *chassis_sps, float *lift_sps)
@@ -445,15 +447,15 @@ static void chassis_task(void *arg)
                     last_line_frame_us = now;
                     last_sensor_change_us = now;
                 } else if (now - last_sensor_change_us > SENSOR_STALE_US) {
+                    /* 采样停滞只更新界面状态，保留上一次转向继续走 */
                     line_seen = false;
-                    line_omega = 0.0f;
                 }
-                vel.vy = line_seen ? base_mps : 0.0f;
-                vel.omega = line_seen ? line_omega : 0.0f;
             } else {
                 line_seen = false;
-                line_omega = 0.0f;
             }
+            /* 丢线不停车：基础航速始终有效，转向角沿用最近一次 PID 输出 */
+            vel.vy = base_mps;
+            vel.omega = line_omega;
         } else if (mode == CHASSIS_MODE_MANUAL) {
             if (now - cmd_us <= (int64_t)MANUAL_CMD_TIMEOUT_MS * 1000) {
                 vel.vx = cmd_vx;

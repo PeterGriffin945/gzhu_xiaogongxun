@@ -336,7 +336,7 @@ float line_follow_get_error(void);
 语义：
 
 - 探头位置 `-3.5 … +3.5`，误差 >0 表示黑线偏右，输出 `omega = -PID(error)`（顺时针修正）。
-- 丢线 150 ms 内保持上次转向并返回上次 ω；超过 150 ms 返回 0。
+- 丢线时**不停车**：返回上一次的 ω 并保持基础航速继续前进，`line_seen` 仅作界面提示。
 - 积分限幅 ±5。`line_follow_update` 由 `chassis` 任务在 100 Hz 中调用，**不要在其他任务重复调用**。
 - `line_follow_set_params` 会对非有限值直接忽略，并对阈值/ω 上限限幅。
 
@@ -393,7 +393,7 @@ void chassis_get_status(chassis_status_t *out);
 
 - `CHASSIS_MODE_MANUAL`：使用 `chassis_set_velocity` 的方向指令，400ms 未刷新自动停车。
 - `CHASSIS_MODE_LINE`：控制环读 ADS，以 `chassis_base_speed` 为基础前进速度，叠加 PID
-  转向；丢线 150ms 后停车。
+  转向；丢线时保持上次转向继续前进，不减速、不停车。
 - `CHASSIS_MODE_POSITION`：控制环**不再下发轮速**，四轮由
   `chassis_start_translation()` 启动的开环定步运动接管；此时 `chassis_set_velocity`
   会被忽略。一般不要手工切到该模式，除非你自己调用 `stepper_start_move()`。
@@ -1211,8 +1211,8 @@ ESP_ERROR_CHECK(competition_start());
 3. **比赛启动要求执行器全静止**：物料盘忙、机械臂忙、有平移、升降未空闲时
    `competition_start()` 都会返回 `ESP_ERR_INVALID_STATE`；手动循迹的残留轮速也会被
    判定为不满足条件。
-4. **丢线 3s 会中止比赛**：循迹阶段连续 3 秒看不到线会以 `SENSOR` 中止；
-   调试时先把线接好，或先用网页确认 `ls` 稳定为 1。
+4. **丢线不会停车/中止**：循迹阶段看不到线时保持上次转向继续走；若车辆因此跑偏，
+   属于标定或赛道问题，可用网页 `ls` 观察是否长时间为 0。
 5. **`align_nudge_mm` 必须 ≥1mm**：1 步约 1.02mm，小于 1mm 的修正会被四舍五入成
    0 步并直接判失败；合法范围 1.0~50.0mm。
 6. **`lift_speed_sps` 必须 ≥100，但过低速度可能触发超时**：合法范围 100~1200；
@@ -1282,4 +1282,4 @@ ESP_ERROR_CHECK(competition_start());
 
 ---
 
-*最后更新：2026-11-15　固件 0xE69C0（944576 字节，约 922 KiB），ESP-IDF v6.1.0 编译 0 warning。*
+*最后更新：2026-11-15　固件 0xE6BF0（945136 字节，约 923 KiB），ESP-IDF v6.1.0 编译 0 warning。*

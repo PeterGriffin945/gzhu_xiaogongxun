@@ -39,7 +39,7 @@ void line_follow_reset(void);
  * @brief 计算循迹输出
  * @param[in]  v         8 路电压，v[0]=探头1
  * @param[in]  dt        采样间隔 s
- * @param[out] line_seen 是否稳定看到黑线（丢线 150ms 内仍为 true）
+ * @param[out] line_seen 当前是否看到黑线（仅用于界面提示，不触发停车）
  * @return 期望角速度 rad/s
  */
 float line_follow_update(const float v[8], float dt, bool *line_seen, float *error_out);

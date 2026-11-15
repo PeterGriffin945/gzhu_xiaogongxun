@@ -145,12 +145,12 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <button data-vx="0" data-vy="0" data-w="-1.6">右旋 ↻</button>
     </div>
     <div class="slider" style="margin-top:12px">
-      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">450 步/秒</b></div>
-      <input type="range" id="cs" min="100" max="1500" step="10" value="450">
+      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">300 步/秒</b></div>
+      <input type="range" id="cs" min="100" max="1500" step="10" value="300">
     </div>
     <div class="slider">
-      <div class="top"><span>升降速度 M5</span><b id="lsv">400 步/秒</b></div>
-      <input type="range" id="ls" min="100" max="1200" step="10" value="400">
+      <div class="top"><span>升降速度 M5</span><b id="lsv">300 步/秒</b></div>
+      <input type="range" id="ls" min="100" max="1200" step="10" value="300">
     </div>
     <div class="switch" style="margin-top:2px"><span>底盘使能 (EN / GPIO42)</span>
       <input type="checkbox" id="enChassis"></div>
@@ -388,17 +388,36 @@ $("enLift").onchange = e => api(`/api/en?lift=${e.target.checked ? 1 : 0}`);
 
 /* ---- 速度滑块（底盘 / 升降） ---- */
 let speedTimer = null;
-function sendSpeed() {
+const speedPending = {};
+function sendSpeedNow() {
   clearTimeout(speedTimer);
-  speedTimer = setTimeout(() => {
-    api(`/speed?chassis=${$("cs").value}&lift=${$("ls").value}`);
-  }, 100);
+  const c = +$("cs").value, l = +$("ls").value;
+  api(`/speed?chassis=${c}&lift=${l}`);
+  /* 记录本地期望值：服务端回显前不用旧状态覆盖滑块，避免“调了又跳回去” */
+  speedPending.cs = { v: c, until: performance.now() + 1500 };
+  speedPending.ls = { v: l, until: performance.now() + 1500 };
+}
+function sendSpeedSoon() {
+  clearTimeout(speedTimer);
+  speedTimer = setTimeout(sendSpeedNow, 60);
+}
+function applySpeedValue(id, lab, value) {
+  const p = speedPending[id];
+  if (p && performance.now() < p.until && Math.abs(p.v - value) > 1) {
+    return;   /* 命令仍在途中 */
+  }
+  delete speedPending[id];
+  $(id).value = value;
+  $(lab).textContent = Math.round(value) + " 步/秒";
 }
 [["cs", "csv"], ["ls", "lsv"]].forEach(([id, lab]) => {
   const el = $(id);
   el.addEventListener("pointerdown", () => S.dragging = id);
-  el.addEventListener("input", () => { $(lab).textContent = el.value + " 步/秒"; });
-  el.addEventListener("change", () => { S.dragging = null; sendSpeed(); });
+  el.addEventListener("input", () => {
+    $(lab).textContent = el.value + " 步/秒";
+    sendSpeedSoon();          /* 拖动过程中也实时生效 */
+  });
+  el.addEventListener("change", () => { S.dragging = null; sendSpeedNow(); });
 });
 
 /* ---- 舵机：实时节流 + 滚轮微调 + 微调/中位按钮 ---- */
@@ -564,7 +583,7 @@ function render(j) {
   }
   $("seq").textContent = "seq " + j.seq;
   $("errv").textContent = "err " + j.err.toFixed(2);
-  $("linestate").textContent = j.mode === 1 ? (j.ls ? "循迹：在线" : "循迹：丢线停车") : "循迹：未启用";
+  $("linestate").textContent = j.mode === 1 ? (j.ls ? "循迹：在线" : "循迹：丢线（保持行驶）") : "循迹：未启用";
   $("linestate").className = "badge " + (j.mode === 1 ? (j.ls ? "ok" : "bad") : "");
 
   const modeName = j.mode === 1 ? "PID 循迹" : (j.mode === 2 ? "定步平移" : "手动");
@@ -581,8 +600,8 @@ function render(j) {
     $("inv").checked = !!j.inv;
     $("rev").checked = !!j.rev;
   }
-  if (S.dragging !== "cs") { $("cs").value = j.cs; $("csv").textContent = Math.round(j.cs) + " 步/秒"; }
-  if (S.dragging !== "ls") { $("ls").value = j.lsp; $("lsv").textContent = Math.round(j.lsp) + " 步/秒"; }
+  if (S.dragging !== "cs") applySpeedValue("cs", "csv", j.cs);
+  if (S.dragging !== "ls") applySpeedValue("ls", "lsv", j.lsp);
 
   if (S.dragging !== "kp") { $("kp").value = j.kp; $("kpv").textContent = j.kp.toFixed(2); }
   if (S.dragging !== "ki") { $("ki").value = j.ki; $("kiv").textContent = j.ki.toFixed(2); }
