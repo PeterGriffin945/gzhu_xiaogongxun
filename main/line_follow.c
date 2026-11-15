@@ -58,6 +58,12 @@ void line_follow_set_params(const line_params_t *in)
         return;
     }
     line_params_t p = *in;
+    /* 防御性检查：调用方可能来自 HTTP/串口，NaN/Inf 会污染整个控制链。 */
+    if (!isfinite(p.kp) || !isfinite(p.ki) || !isfinite(p.kd) ||
+        !isfinite(p.threshold) || !isfinite(p.base_speed) ||
+        !isfinite(p.max_omega)) {
+        return;
+    }
     /* 阈值全量程 0.0 ~ 5.0V：ADS1115 保持 ±6.144V 量程，不做 3.3V 截断 */
     if (p.threshold < 0.0f) {
         p.threshold = 0.0f;
@@ -147,8 +153,9 @@ float line_follow_update(const float v[8], float dt, bool *line_seen, float *err
     }
     s_lost_since_us = 0;
 
-    /* 3. 加权平均误差 */
+    /* 3. 加权平均误差：微分必须使用更新前的上一次误差。 */
     float error = sum_wp / sum_w;
+    float derivative = (error - s_last_error) / dt;
     s_last_error = error;
     s_last_error_out = error;
     if (error_out != NULL) {
@@ -167,7 +174,6 @@ float line_follow_update(const float v[8], float dt, bool *line_seen, float *err
         s_integral = -int_limit;
     }
 
-    float derivative = (error - s_last_error) / dt;
     float out = p.kp * error + p.ki * s_integral + p.kd * derivative;
 
     if (out > p.max_omega) {

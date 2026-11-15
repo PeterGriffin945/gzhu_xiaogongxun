@@ -18,7 +18,9 @@
 #include "ads1115.h"
 #include "app_config.h"
 #include "chassis.h"
+#include "competition.h"
 #include "i2c_bus.h"
+#include "k230_link.h"
 #include "line_follow.h"
 #include "lu9685.h"
 #include "stepper.h"
@@ -73,6 +75,12 @@ void app_main(void)
 
     line_follow_init();
     ESP_ERROR_CHECK(chassis_init());
+
+    /* K230 链路失败只禁止自动比赛，不影响网页手动排障。 */
+    if (k230_link_init() != ESP_OK) {
+        ESP_LOGW(TAG, "K230 UART unavailable, automatic competition disabled");
+    }
+    ESP_ERROR_CHECK(competition_init());
 
     /* Wi-Fi 与 Web 控制台 */
     ESP_ERROR_CHECK(wifi_sta_init());

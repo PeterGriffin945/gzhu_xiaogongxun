@@ -8,6 +8,12 @@ idf_component_register(
         "lu9685.c"
         "line_follow.c"
         "chassis.c"
+        "vision_protocol.c"
+        "k230_link.c"
+        "station_detector.c"
+        "tray_controller.c"
+        "manipulator.c"
+        "competition.c"
         "wifi_sta.c"
         "web_server.c"
     INCLUDE_DIRS "."
@@ -15,6 +21,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_gptimer
         esp_driver_i2c
+        esp_driver_uart
         esp_timer
         esp_http_server
         esp_event

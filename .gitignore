@@ -79,3 +79,9 @@ Desktop.ini
 
 # Local tooling artifacts
 .merkle-snapshot.json
+
+# Bug-fix workflow scratch (reproduction binaries, logs)
+.bugfix/
+
+# Agent tooling generated overview
+codebase-structure.md

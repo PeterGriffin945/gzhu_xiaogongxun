@@ -53,6 +53,14 @@ extern "C" {
 #define LU9685_CH_TRAY     4      /* 物料盘旋转舵机 SG90 */
 #define LU9685_CH_GRIPPER  8      /* 夹爪开合舵机 20kg */
 
+/* K230D PORT2：UART1 重映射到已确认的 UART0 排针，控制台需迁至原生 USB。 */
+#define K230_UART_PORT      1
+#define PIN_K230_TX         43
+#define PIN_K230_RX         44
+#define K230_UART_BAUD      115200
+#define K230_LINK_TIMEOUT_MS 1500
+#define K230_RESULT_TIMEOUT_MS 400
+
 /* ==========================================================================
  * 三、步进脉冲发生器 (DDS) 参数
  * ========================================================================== */

@@ -1,14 +1,6 @@
 /**
  * @file stepper.c
- * @brief 5 轴步进电机 DDS 脉冲发生器
- *
- * 设计要点：
- *  - GPTimer 硬件定时器 20kHz（50us），在 ISR 中用 32 位相位累加器
- *    （DDS）同时产生 5 路 STEP，STEP 高电平保持 1 个 tick（50us >= 3us）。
- *  - 每个 tick 先拉低上一拍的 STEP，再根据相位溢出拉高本拍 STEP，
- *    因此相邻两个脉冲之间至少有 50us 低电平，最高步频 10kHz。
- *  - 1kHz 任务负责梯形加减速，把速度换算成相位增量写入 ISR；
- *    起步时直接跨过 200 步/秒的低速共振区。
+ * @brief 5 轴步进电机 DDS 脉冲发生器与开环定步执行器
  */
 #include "stepper.h"
 
@@ -25,48 +17,80 @@
 
 #include "app_config.h"
 
+#define POSITION_START_SPEED 40.0f
+
 static const char *TAG = "stepper";
 
 typedef struct {
     gpio_num_t step_pin;
     gpio_num_t dir_pin;
-    bool dir_invert;      /* 左侧对置安装 → 逻辑方向取反 */
+    bool dir_invert;
 } axis_hw_t;
 
 static const axis_hw_t s_hw[AXIS_COUNT] = {
-    [AXIS_RR]   = { PIN_M1_RR_STEP,   PIN_M1_RR_DIR,   false },
-    [AXIS_RF]   = { PIN_M2_RF_STEP,   PIN_M2_RF_DIR,   false },
-    [AXIS_LF]   = { PIN_M3_LF_STEP,   PIN_M3_LF_DIR,   true  },
-    [AXIS_LR]   = { PIN_M4_LR_STEP,   PIN_M4_LR_DIR,   true  },
+    [AXIS_RR] = { PIN_M1_RR_STEP, PIN_M1_RR_DIR, false },
+    [AXIS_RF] = { PIN_M2_RF_STEP, PIN_M2_RF_DIR, false },
+    [AXIS_LF] = { PIN_M3_LF_STEP, PIN_M3_LF_DIR, true },
+    [AXIS_LR] = { PIN_M4_LR_STEP, PIN_M4_LR_DIR, true },
     [AXIS_LIFT] = { PIN_M5_LIFT_STEP, PIN_M5_LIFT_DIR, false },
 };
 
-/* ---------- ISR 共享数据 ---------- */
-static volatile int32_t s_phase_inc[AXIS_COUNT];   /* 每 tick 相位增量 */
-static volatile float   s_target[AXIS_COUNT];      /* 目标速度 步/秒 */
-static volatile float   s_speed[AXIS_COUNT];       /* 当前速度 步/秒 */
-static uint32_t         s_phase[AXIS_COUNT];       /* 32 位相位累加器 */
-static uint8_t          s_pulse_hold[AXIS_COUNT];  /* 1 = 本拍 STEP 为高 */
-
+static volatile int32_t s_phase_inc[AXIS_COUNT];
+static volatile float s_target[AXIS_COUNT];
+static volatile float s_speed[AXIS_COUNT];
+static volatile uint32_t s_phase[AXIS_COUNT];
+static uint8_t s_pulse_hold[AXIS_COUNT];
 static bool s_dir_invert[AXIS_COUNT];
-
 static volatile bool s_en_chassis;
 static volatile bool s_en_lift;
 static volatile float s_accel = STEPPER_DEFAULT_ACCEL;
-
 static gptimer_handle_t s_timer;
 
-/* ======================= 硬件定时器 ISR ======================= */
+static volatile int32_t s_position[AXIS_COUNT];
+static volatile int32_t s_move_remaining[AXIS_COUNT];
+static volatile int8_t s_move_direction[AXIS_COUNT];
+static volatile bool s_move_active[AXIS_COUNT];
+static volatile bool s_move_stop_requested[AXIS_COUNT];
+static volatile float s_move_peak[AXIS_COUNT];
+static volatile uint32_t s_move_generation[AXIS_COUNT];
+static volatile stepper_move_status_t s_move_status[AXIS_COUNT];
+static portMUX_TYPE s_move_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/* 调用方必须持有 s_move_mux；活动定步的取消在此原子发布。 */
+static void cancel_move_locked(stepper_axis_t axis)
+{
+    if (s_move_active[axis]) {
+        s_move_generation[axis]++;
+        s_move_remaining[axis] = 0;
+        s_move_stop_requested[axis] = false;
+        s_move_status[axis] = STEPPER_MOVE_CANCELLED;
+        s_target[axis] = 0.0f;
+        s_speed[axis] = 0.0f;
+        s_phase_inc[axis] = 0;
+        s_phase[axis] = 0;
+        s_move_active[axis] = false;
+    }
+}
+
 static bool IRAM_ATTR stepper_timer_isr(gptimer_handle_t timer,
-                                        const gptimer_alarm_event_data_t *edata,
-                                        void *user_ctx)
+                                         const gptimer_alarm_event_data_t *edata,
+                                         void *user_ctx)
 {
     (void)timer;
     (void)edata;
     (void)user_ctx;
 
+    taskENTER_CRITICAL_ISR(&s_move_mux);
     for (int i = 0; i < AXIS_COUNT; ++i) {
-        /* 相位累加必须每拍都执行，否则高步频时会丢失步数 */
+        bool enabled = (i == AXIS_LIFT) ? s_en_lift : s_en_chassis;
+        if (!enabled) {
+            if (s_pulse_hold[i] != 0) {
+                s_pulse_hold[i] = 0;
+                gpio_set_level(s_hw[i].step_pin, 0);
+            }
+            continue;
+        }
+
         bool fire = false;
         int32_t inc = s_phase_inc[i];
         if (inc != 0) {
@@ -78,21 +102,39 @@ static bool IRAM_ATTR stepper_timer_isr(gptimer_handle_t timer,
 
         bool was_high = (s_pulse_hold[i] != 0);
         if (was_high) {
-            /* 上一拍的高电平到此结束（脉宽 = 50us） */
             s_pulse_hold[i] = 0;
             gpio_set_level(s_hw[i].step_pin, 0);
         }
 
-        /* 最高 8kHz 时相邻脉冲间隔 >= 2 tick，不会出现连续高电平 */
         if (fire && !was_high) {
             gpio_set_level(s_hw[i].step_pin, 1);
             s_pulse_hold[i] = 1;
+
+            if (s_move_active[i]) {
+                int8_t direction = s_move_direction[i];
+                s_position[i] += direction;
+                int32_t remaining = s_move_remaining[i] - 1;
+                s_move_remaining[i] = remaining;
+                if (remaining <= 0) {
+                    /* 最后一步由 ISR 自己封口，避免 1ms 斜坡任务再次补发脉冲。 */
+                    s_move_generation[i]++;
+                    s_move_stop_requested[i] = false;
+                    s_move_status[i] = STEPPER_MOVE_DONE;
+                    s_target[i] = 0.0f;
+                    s_speed[i] = 0.0f;
+                    s_phase_inc[i] = 0;
+                    s_phase[i] = 0;
+                    s_move_active[i] = false;
+                }
+            } else if (inc != 0) {
+                s_position[i] += (inc > 0) ? 1 : -1;
+            }
         }
     }
+    taskEXIT_CRITICAL_ISR(&s_move_mux);
     return false;
 }
 
-/* ======================= 方向 / 速度工具 ======================= */
 static void apply_dir(stepper_axis_t axis, bool forward)
 {
     int level = forward ? 1 : 0;
@@ -125,7 +167,14 @@ static float clamp_speed(float sps)
     return sps;
 }
 
-/* ======================= 1kHz 速度斜坡任务 ======================= */
+static float approach_speed(float current, float target, float step)
+{
+    if (current < target) {
+        return fminf(current + step, target);
+    }
+    return fmaxf(current - step, target);
+}
+
 static void stepper_ramp_task(void *arg)
 {
     (void)arg;
@@ -134,62 +183,109 @@ static void stepper_ramp_task(void *arg)
 
     while (1) {
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(STEPPER_RAMP_PERIOD_MS));
-
         int64_t now_us = esp_timer_get_time();
         float dt = (float)(now_us - last_us) * 1e-6f;
         last_us = now_us;
         if (dt <= 0.0f) {
             dt = 0.001f;
         } else if (dt > 0.05f) {
-            dt = 0.05f;      /* 任务被长时间阻塞时限制步进，避免速度突变 */
+            dt = 0.05f;
         }
-
         float acc_step = s_accel * dt;
 
         for (int i = 0; i < AXIS_COUNT; ++i) {
+            taskENTER_CRITICAL(&s_move_mux);
+            uint32_t generation = s_move_generation[i];
+            bool move_active = s_move_active[i];
+            bool stop_requested = s_move_stop_requested[i];
+            int32_t remaining = s_move_remaining[i];
+            int direction = s_move_direction[i];
+            float move_peak = s_move_peak[i];
             float cur = s_speed[i];
-            float tgt = clamp_speed(s_target[i]);
+            float target = s_target[i];
+            taskEXIT_CRITICAL(&s_move_mux);
 
-            if (tgt == 0.0f) {
-                /* 减速到 0 */
-                if (fabsf(cur) <= acc_step) {
-                    cur = 0.0f;
-                } else {
-                    cur -= copysignf(acc_step, cur);
+            if (move_active) {
+                if (remaining <= 0 || direction == 0) {
+                    continue;
                 }
-            } else if (cur == 0.0f) {
-                /* 从零起步：直接跨过 200 步/秒死区 */
-                float start = fminf(fabsf(tgt), STEPPER_START_SPEED);
-                apply_dir((stepper_axis_t)i, tgt > 0.0f);
-                cur = copysignf(start, tgt);
-            } else if ((cur > 0.0f) != (tgt > 0.0f)) {
-                /* 方向相反：先制动到 0，下一拍再换向，严禁带速换向 */
-                if (fabsf(cur) <= acc_step) {
-                    cur = 0.0f;
+
+                float desired = 0.0f;
+                bool set_direction = false;
+                if (stop_requested) {
+                    cur = approach_speed(cur, 0.0f, acc_step);
                 } else {
-                    cur -= copysignf(acc_step, cur);
+                    /* 剩余脉冲越少，允许速度越低，形成短距离也能使用的三角形/梯形曲线。 */
+                    float limit = sqrtf(2.0f * s_accel * (float)remaining);
+                    float desired_mag = fminf(move_peak, limit);
+                    desired_mag = fmaxf(desired_mag, 1.0f);
+                    desired = direction * desired_mag;
+
+                    if (cur != 0.0f && ((cur > 0.0f) != (desired > 0.0f))) {
+                        cur = approach_speed(cur, 0.0f, acc_step);
+                    } else if (cur == 0.0f) {
+                        set_direction = true;
+                        cur = direction * fminf(desired_mag, POSITION_START_SPEED);
+                    } else {
+                        cur = approach_speed(cur, desired, acc_step);
+                    }
                 }
-            } else {
-                float mag = fabsf(cur);
-                float tmag = fabsf(tgt);
-                if (mag < tmag) {
-                    mag = fminf(mag + acc_step, tmag);
-                } else {
-                    mag = fmaxf(mag - acc_step, tmag);
+
+                taskENTER_CRITICAL(&s_move_mux);
+                if (s_move_active[i] && s_move_generation[i] == generation &&
+                    s_move_stop_requested[i] == stop_requested) {
+                    if (stop_requested && cur == 0.0f) {
+                        s_move_generation[i]++;
+                        s_move_remaining[i] = 0;
+                        s_move_stop_requested[i] = false;
+                        s_move_status[i] = STEPPER_MOVE_CANCELLED;
+                        s_target[i] = 0.0f;
+                        s_speed[i] = 0.0f;
+                        s_phase_inc[i] = 0;
+                        s_phase[i] = 0;
+                        s_move_active[i] = false;
+                    } else {
+                        if (set_direction) {
+                            apply_dir((stepper_axis_t)i, direction > 0);
+                        }
+                        s_target[i] = desired;
+                        s_speed[i] = cur;
+                        s_phase_inc[i] = speed_to_phase_inc(cur);
+                    }
                 }
-                cur = copysignf(mag, cur);
+                taskEXIT_CRITICAL(&s_move_mux);
+                continue;
             }
 
-            s_speed[i] = cur;
-            s_phase_inc[i] = speed_to_phase_inc(cur);
+            float tgt = clamp_speed(target);
+            bool set_direction = false;
+            if (tgt == 0.0f) {
+                cur = approach_speed(cur, 0.0f, acc_step);
+            } else if (cur == 0.0f) {
+                float start = fminf(fabsf(tgt), STEPPER_START_SPEED);
+                set_direction = true;
+                cur = copysignf(start, tgt);
+            } else if ((cur > 0.0f) != (tgt > 0.0f)) {
+                cur = approach_speed(cur, 0.0f, acc_step);
+            } else {
+                cur = approach_speed(cur, tgt, acc_step);
+            }
+
+            taskENTER_CRITICAL(&s_move_mux);
+            if (!s_move_active[i] && s_move_generation[i] == generation) {
+                if (set_direction) {
+                    apply_dir((stepper_axis_t)i, tgt > 0.0f);
+                }
+                s_speed[i] = cur;
+                s_phase_inc[i] = speed_to_phase_inc(cur);
+            }
+            taskEXIT_CRITICAL(&s_move_mux);
         }
     }
 }
 
-/* ======================= 初始化 ======================= */
 static esp_err_t init_gpio(void)
 {
-    /* 先配置 EN，并立即拉高（脱机释放，防上电发热） */
     gpio_config_t en_cfg = {
         .pin_bit_mask = (1ULL << PIN_EN_CHASSIS) | (1ULL << PIN_EN_LIFT),
         .mode = GPIO_MODE_OUTPUT,
@@ -205,8 +301,7 @@ static esp_err_t init_gpio(void)
 
     uint64_t mask = 0;
     for (int i = 0; i < AXIS_COUNT; ++i) {
-        mask |= (1ULL << s_hw[i].step_pin);
-        mask |= (1ULL << s_hw[i].dir_pin);
+        mask |= (1ULL << s_hw[i].step_pin) | (1ULL << s_hw[i].dir_pin);
     }
     gpio_config_t io_cfg = {
         .pin_bit_mask = mask,
@@ -216,10 +311,10 @@ static esp_err_t init_gpio(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&io_cfg), TAG, "STEP/DIR gpio config failed");
-
     for (int i = 0; i < AXIS_COUNT; ++i) {
         gpio_set_level(s_hw[i].step_pin, 0);
         s_dir_invert[i] = s_hw[i].dir_invert;
+        s_move_status[i] = STEPPER_MOVE_IDLE;
         apply_dir((stepper_axis_t)i, true);
     }
     return ESP_OK;
@@ -228,58 +323,68 @@ static esp_err_t init_gpio(void)
 esp_err_t stepper_init(void)
 {
     ESP_RETURN_ON_ERROR(init_gpio(), TAG, "gpio init failed");
-
     gptimer_config_t tcfg = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT,
         .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = 1000000,       /* 1MHz，计数 50 = 50us */
+        .resolution_hz = 1000000,
         .intr_priority = 3,
         .flags.intr_shared = false,
     };
     ESP_RETURN_ON_ERROR(gptimer_new_timer(&tcfg, &s_timer), TAG, "gptimer create failed");
-
-    gptimer_event_callbacks_t cbs = {
-        .on_alarm = stepper_timer_isr,
-    };
-    ESP_RETURN_ON_ERROR(gptimer_register_event_callbacks(s_timer, &cbs, NULL),
-                        TAG, "gptimer callback failed");
-
+    gptimer_event_callbacks_t cbs = { .on_alarm = stepper_timer_isr };
+    ESP_RETURN_ON_ERROR(gptimer_register_event_callbacks(s_timer, &cbs, NULL), TAG, "gptimer callback failed");
     gptimer_alarm_config_t acfg = {
         .alarm_count = STEPPER_TICK_US,
         .reload_count = 0,
         .flags.auto_reload_on_alarm = true,
     };
-    ESP_RETURN_ON_ERROR(gptimer_set_alarm_action(s_timer, &acfg),
-                        TAG, "gptimer alarm failed");
+    ESP_RETURN_ON_ERROR(gptimer_set_alarm_action(s_timer, &acfg), TAG, "gptimer alarm failed");
     ESP_RETURN_ON_ERROR(gptimer_enable(s_timer), TAG, "gptimer enable failed");
     ESP_RETURN_ON_ERROR(gptimer_start(s_timer), TAG, "gptimer start failed");
 
-    BaseType_t ret = xTaskCreatePinnedToCore(stepper_ramp_task, "step_ramp",
-                                             4096, NULL, 12, NULL, 0);
+    BaseType_t ret = xTaskCreatePinnedToCore(stepper_ramp_task, "step_ramp", 4096, NULL, 12, NULL, 0);
     if (ret != pdPASS) {
-        ESP_LOGE(TAG, "create ramp task failed");
         return ESP_ERR_NO_MEM;
     }
-
-    ESP_LOGI(TAG, "5-axis DDS ready: %d Hz tick, start=%.0f sps, accel=%.0f sps^2",
-             STEPPER_TICK_HZ, STEPPER_START_SPEED, s_accel);
+    ESP_LOGI(TAG, "5-axis DDS ready: %d Hz tick, accel=%.0f sps^2", STEPPER_TICK_HZ, s_accel);
     return ESP_OK;
 }
 
-/* ======================= 对外接口 ======================= */
-void stepper_set_speed(stepper_axis_t axis, float steps_per_sec)
+static void set_speed_locked(stepper_axis_t axis, float steps_per_sec)
 {
-    if (axis >= AXIS_COUNT) {
-        return;
+    if (s_move_active[axis]) {
+        cancel_move_locked(axis);
+    } else {
+        s_move_generation[axis]++;
+    }
+    if (steps_per_sec != 0.0f) {
+        s_move_status[axis] = STEPPER_MOVE_IDLE;
     }
     s_target[axis] = clamp_speed(steps_per_sec);
+}
+
+void stepper_set_speed(stepper_axis_t axis, float steps_per_sec)
+{
+    if (axis >= AXIS_COUNT || !isfinite(steps_per_sec)) {
+        return;
+    }
+    taskENTER_CRITICAL(&s_move_mux);
+    set_speed_locked(axis, steps_per_sec);
+    taskEXIT_CRITICAL(&s_move_mux);
 }
 
 void stepper_set_chassis_speeds(const float steps_per_sec[4])
 {
     for (int i = 0; i < 4; ++i) {
-        s_target[i] = clamp_speed(steps_per_sec[i]);
+        if (!isfinite(steps_per_sec[i])) {
+            return;
+        }
     }
+    taskENTER_CRITICAL(&s_move_mux);
+    for (int i = 0; i < 4; ++i) {
+        set_speed_locked((stepper_axis_t)i, steps_per_sec[i]);
+    }
+    taskEXIT_CRITICAL(&s_move_mux);
 }
 
 float stepper_get_speed(stepper_axis_t axis)
@@ -294,6 +399,9 @@ float stepper_get_target(stepper_axis_t axis)
 
 void stepper_set_accel(float steps_per_sec2)
 {
+    if (!isfinite(steps_per_sec2)) {
+        return;
+    }
     if (steps_per_sec2 < STEPPER_MIN_ACCEL) {
         steps_per_sec2 = STEPPER_MIN_ACCEL;
     } else if (steps_per_sec2 > STEPPER_MAX_ACCEL) {
@@ -321,22 +429,48 @@ bool stepper_get_dir_invert(stepper_axis_t axis)
 
 void stepper_set_chassis_enable(bool enable)
 {
+    taskENTER_CRITICAL(&s_move_mux);
     if (!enable) {
         for (int i = 0; i < 4; ++i) {
+            if (s_move_active[i]) {
+                cancel_move_locked((stepper_axis_t)i);
+            } else {
+                s_move_generation[i]++;
+            }
+            s_move_stop_requested[i] = false;
             s_target[i] = 0.0f;
+            s_speed[i] = 0.0f;
+            s_phase_inc[i] = 0;
+            s_phase[i] = 0;
+            s_pulse_hold[i] = 0;
+            gpio_set_level(s_hw[i].step_pin, 0);
         }
     }
     gpio_set_level(PIN_EN_CHASSIS, enable ? 0 : 1);
     s_en_chassis = enable;
+    taskEXIT_CRITICAL(&s_move_mux);
 }
 
 void stepper_set_lift_enable(bool enable)
 {
+    taskENTER_CRITICAL(&s_move_mux);
     if (!enable) {
+        if (s_move_active[AXIS_LIFT]) {
+            cancel_move_locked(AXIS_LIFT);
+        } else {
+            s_move_generation[AXIS_LIFT]++;
+        }
+        s_move_stop_requested[AXIS_LIFT] = false;
         s_target[AXIS_LIFT] = 0.0f;
+        s_speed[AXIS_LIFT] = 0.0f;
+        s_phase_inc[AXIS_LIFT] = 0;
+        s_phase[AXIS_LIFT] = 0;
+        s_pulse_hold[AXIS_LIFT] = 0;
+        gpio_set_level(s_hw[AXIS_LIFT].step_pin, 0);
     }
     gpio_set_level(PIN_EN_LIFT, enable ? 0 : 1);
     s_en_lift = enable;
+    taskEXIT_CRITICAL(&s_move_mux);
 }
 
 bool stepper_chassis_enabled(void)
@@ -349,27 +483,114 @@ bool stepper_lift_enabled(void)
     return s_en_lift;
 }
 
+esp_err_t stepper_start_move(stepper_axis_t axis, int32_t delta_steps, float peak_sps)
+{
+    if (axis >= AXIS_COUNT || delta_steps == 0 || !isfinite(peak_sps) || peak_sps <= 0.0f) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int64_t magnitude = (delta_steps > 0) ? (int64_t)delta_steps : -(int64_t)delta_steps;
+    if (magnitude > INT32_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t result = ESP_OK;
+    taskENTER_CRITICAL(&s_move_mux);
+    if (s_move_active[axis] || fabsf(s_speed[axis]) > 1.0f) {
+        result = ESP_ERR_INVALID_STATE;
+    } else if ((axis == AXIS_LIFT && !s_en_lift) || (axis != AXIS_LIFT && !s_en_chassis)) {
+        result = ESP_ERR_INVALID_STATE;
+    } else {
+        s_move_generation[axis]++;
+        s_target[axis] = 0.0f;
+        s_speed[axis] = 0.0f;
+        s_phase_inc[axis] = 0;
+        s_phase[axis] = 0;
+        s_move_peak[axis] = fminf(peak_sps, STEPPER_MAX_SPEED);
+        s_move_direction[axis] = (delta_steps > 0) ? 1 : -1;
+        s_move_remaining[axis] = (int32_t)magnitude;
+        s_move_stop_requested[axis] = false;
+        s_move_status[axis] = STEPPER_MOVE_RUNNING;
+        s_move_active[axis] = true;
+    }
+    taskEXIT_CRITICAL(&s_move_mux);
+    return result;
+}
+
+stepper_move_status_t stepper_get_move_status(stepper_axis_t axis)
+{
+    return (axis < AXIS_COUNT) ? s_move_status[axis] : STEPPER_MOVE_CANCELLED;
+}
+
+bool stepper_move_active(stepper_axis_t axis)
+{
+    return (axis < AXIS_COUNT) && s_move_active[axis];
+}
+
+int32_t stepper_get_move_remaining(stepper_axis_t axis)
+{
+    return (axis < AXIS_COUNT) ? s_move_remaining[axis] : 0;
+}
+
+int32_t stepper_get_position(stepper_axis_t axis)
+{
+    return (axis < AXIS_COUNT) ? s_position[axis] : 0;
+}
+
+esp_err_t stepper_set_position(stepper_axis_t axis, int32_t position)
+{
+    if (axis >= AXIS_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t result = ESP_OK;
+    taskENTER_CRITICAL(&s_move_mux);
+    if (s_move_active[axis] || fabsf(s_speed[axis]) > 1.0f) {
+        result = ESP_ERR_INVALID_STATE;
+    } else {
+        s_position[axis] = position;
+        s_move_status[axis] = STEPPER_MOVE_IDLE;
+    }
+    taskEXIT_CRITICAL(&s_move_mux);
+    return result;
+}
+
 void stepper_stop(stepper_axis_t axis)
 {
-    if (axis < AXIS_COUNT) {
-        s_target[axis] = 0.0f;
+    if (axis >= AXIS_COUNT) {
+        return;
     }
+    taskENTER_CRITICAL(&s_move_mux);
+    s_move_generation[axis]++;
+    if (s_move_active[axis]) {
+        /* 活动定步由 ramp 减速到零后再发布 CANCELLED，保持平滑停车。 */
+        s_move_stop_requested[axis] = true;
+    }
+    s_target[axis] = 0.0f;
+    taskEXIT_CRITICAL(&s_move_mux);
 }
 
 void stepper_stop_all(void)
 {
     for (int i = 0; i < AXIS_COUNT; ++i) {
-        s_target[i] = 0.0f;
+        stepper_stop((stepper_axis_t)i);
     }
 }
 
 void stepper_abort_all(void)
 {
+    taskENTER_CRITICAL(&s_move_mux);
     for (int i = 0; i < AXIS_COUNT; ++i) {
+        if (s_move_active[i]) {
+            cancel_move_locked((stepper_axis_t)i);
+        } else {
+            s_move_generation[i]++;
+        }
+        s_move_stop_requested[i] = false;
         s_target[i] = 0.0f;
         s_speed[i] = 0.0f;
         s_phase_inc[i] = 0;
+        s_phase[i] = 0;
         s_pulse_hold[i] = 0;
         gpio_set_level(s_hw[i].step_pin, 0);
     }
+    taskEXIT_CRITICAL(&s_move_mux);
 }

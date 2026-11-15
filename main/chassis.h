@@ -1,12 +1,11 @@
 /**
  * @file chassis.h
- * @brief 底盘控制：手动遥控 / 循迹双模式 + 麦轮解算 + 安全看门狗
+ * @brief 底盘手动/循迹/定步平移与升降统一控制仲裁
  */
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
-
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -14,15 +13,16 @@ extern "C" {
 #endif
 
 typedef enum {
-    CHASSIS_MODE_MANUAL = 0,   /* Web 遥控 */
-    CHASSIS_MODE_LINE   = 1,   /* 8 路 PID 循迹 */
+    CHASSIS_MODE_MANUAL = 0,
+    CHASSIS_MODE_LINE = 1,
+    CHASSIS_MODE_POSITION = 2,
 } chassis_mode_t;
 
 typedef struct {
     chassis_mode_t mode;
-    float vx, vy, omega;           /* 当前生效速度指令 */
-    float wheel_mps[4];            /* RR/RF/LF/LR 轮速 m/s */
-    int32_t wheel_steps[4];        /* RR/RF/LF/LR 步频 */
+    float vx, vy, omega;
+    float wheel_mps[4];
+    int32_t wheel_steps[4];
     float line_error;
     bool line_seen;
     float lift_sps;
@@ -30,29 +30,24 @@ typedef struct {
 } chassis_status_t;
 
 esp_err_t chassis_init(void);
-
 void chassis_set_mode(chassis_mode_t mode);
 chassis_mode_t chassis_get_mode(void);
-
-/** 手动速度指令，必须在 MANUAL_CMD_TIMEOUT_MS 内持续刷新，否则自动停车 */
 void chassis_set_velocity(float vx, float vy, float omega);
-
-/** 升降点动：只取符号（正=上升，负=下降），幅值由 lift_speed 决定；
- *  同样带 500ms 看门狗 */
 void chassis_lift_jog(float steps_per_sec);
+esp_err_t chassis_lift_move_to(int32_t target_position, float peak_sps);
+bool chassis_lift_move_active(void);
+bool chassis_lift_idle(void);
+void chassis_set_lift_limits(int32_t min_position, int32_t max_position);
+void chassis_invalidate_lift_limits(void);
 
-/**
- * @brief 设置运行时基础转速（步/秒）
- *
- * chassis_sps 决定手动遥控时四轮的最大轮速，以及循迹模式的基础前进速度；
- * lift_sps 决定升降轴点动速度。超出范围自动限幅。
- */
+/** 开环短距平移：dx 向右、dy 向前，单位 mm；四轮按距离比例分配峰值步频。 */
+esp_err_t chassis_start_translation(float dx_mm, float dy_mm, float peak_sps);
+bool chassis_translation_active(void);
+bool chassis_translation_done(void);
+
 void chassis_set_speeds(float chassis_sps, float lift_sps);
 void chassis_get_speeds(float *chassis_sps, float *lift_sps);
-
-/** 平滑停车：底盘与升降目标清零 */
 void chassis_stop(void);
-
 void chassis_get_status(chassis_status_t *out);
 
 #ifdef __cplusplus

@@ -92,6 +92,14 @@ padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
 .pulse{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .pulse .ttl{display:flex;justify-content:space-between;font-size:12px;color:#b7c6d6}
 .pulse .ttl b{color:var(--warn);font-weight:600}
+.field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--dim)}
+.field input{width:100%;background:#0a121a;color:var(--fg);border:1px solid #273a4c;border-radius:8px;padding:8px;font-family:inherit}
+.statusline{font-size:12px;line-height:1.8;color:#b7c6d6;word-break:break-word}
+.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}
+.slot{padding:7px;border:1px solid var(--line);border-radius:8px;text-align:center;font-size:11px;color:var(--dim)}
+.slot.current{border-color:var(--acc);color:var(--acc)}
+.c1{color:#f87171}.c2{color:#4ade80}.c3{color:#60a5fa}
+details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);margin-bottom:10px}
 </style>
 </head>
 <body>
@@ -186,11 +194,12 @@ padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
         <button class="stop" data-rng="s4" data-mid="1">中位</button>
       </div>
       <div class="btnrow" style="margin-top:8px">
-        <button class="ghost" data-tray="0">工位1 · 0°</button>
-        <button class="ghost" data-tray="45">工位2 · 45°</button>
-        <button class="ghost" data-tray="90">工位3 · 90°</button>
-        <button class="ghost" data-tray="135">工位4 · 135°</button>
-        <button class="ghost" data-tray="180">工位5 · 180°</button>
+        <button class="ghost" data-slot="0">slot 0</button>
+        <button class="ghost" data-slot="1">slot 1</button>
+        <button class="ghost" data-slot="2">slot 2</button>
+        <button class="ghost" data-slot="3">slot 3</button>
+        <button class="ghost" data-slot="4">slot 4</button>
+        <button class="ghost" data-slot="5">slot 5</button>
       </div>
     </div>
 
@@ -232,6 +241,61 @@ padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
   </section>
 
   <section class="card">
+    <h2>比赛自动流程 <span id="compState" class="badge">MANUAL</span></h2>
+    <div class="statusline" id="compInfo">等待状态…</div>
+    <div class="btnrow" style="margin:10px 0">
+      <button id="compStart" class="primary">▶ 启动三取三放</button>
+      <button id="compAbort" class="stop">■ 全局中止</button>
+    </div>
+    <div class="slots" id="compSlots"></div>
+    <div class="btnrow">
+      <button id="zZero">设当前 Z 为运输零点</button>
+      <button id="trayZero">设当前盘位为 slot0</button>
+      <button id="trayNext">正转 60°</button>
+    </div>
+    <div class="statusline" id="visionInfo" style="margin-top:8px">K230 等待状态…</div>
+    <details>
+      <summary>动作、视觉、分度与横线标定（默认值必须实测）</summary>
+      <div class="grid2">
+        <label class="field">地面抓取 Z 步数<input type="number" data-cfg="zpick"></label>
+        <label class="field">盘内取放 Z 步数<input type="number" data-cfg="ztray"></label>
+        <label class="field">靶环放置 Z 步数<input type="number" data-cfg="zplace"></label>
+        <label class="field">Z 最大软限位<input type="number" data-cfg="zmax"></label>
+        <label class="field">底座运输角<input type="number" data-cfg="bstow"></label>
+        <label class="field">底座地面抓取角<input type="number" data-cfg="bpick"></label>
+        <label class="field">底座盘位角<input type="number" data-cfg="btray"></label>
+        <label class="field">底座靶环角<input type="number" data-cfg="bplace"></label>
+        <label class="field">夹爪张开角<input type="number" data-cfg="gopen"></label>
+        <label class="field">夹爪闭合角<input type="number" data-cfg="gclose"></label>
+        <label class="field">底座稳定 ms<input type="number" data-cfg="bms"></label>
+        <label class="field">夹爪稳定 ms<input type="number" data-cfg="gms"></label>
+        <label class="field">Z 定步速度<input type="number" data-cfg="lsps"></label>
+        <label class="field">物料基准 X<input type="number" data-cfg="mcx"></label>
+        <label class="field">物料基准 Y<input type="number" data-cfg="mcy"></label>
+        <label class="field">靶环基准 X<input type="number" data-cfg="rcx"></label>
+        <label class="field">靶环基准 Y<input type="number" data-cfg="rcy"></label>
+        <label class="field">视觉容差 px<input type="number" data-cfg="tol"></label>
+        <label class="field">最低置信度<input type="number" data-cfg="minconf"></label>
+        <label class="field">最大修正次数<input type="number" data-cfg="maxiter"></label>
+        <label class="field">X 修正方向 ±1<input type="number" data-cfg="xsign"></label>
+        <label class="field">Y 修正方向 ±1<input type="number" data-cfg="ysign"></label>
+        <label class="field">单次修正 mm<input type="number" step="0.5" data-cfg="nudge"></label>
+        <label class="field">修正轮速步/秒<input type="number" data-cfg="asps"></label>
+        <label class="field">CH4 正转速度角<input type="number" data-cfg="tspeed"></label>
+        <label class="field">CH4 每 60° ms<input type="number" data-cfg="tms"></label>
+        <label class="field">横线最少黑探头<input type="number" data-cfg="sblack"></label>
+        <label class="field">横线确认帧数<input type="number" data-cfg="sconfirm"></label>
+        <label class="field">离站最多黑探头<input type="number" data-cfg="sclear"></label>
+        <label class="field">正常线重装帧数<input type="number" data-cfg="srearm"></label>
+        <label class="field">工位最小间隔 ms<input type="number" data-cfg="sinterval"></label>
+      </div>
+      <button id="cfgSave" class="primary" style="width:100%;margin-top:10px">保存并确认本次标定</button>
+    </details>
+    <div class="hint">初始化顺序：低速点动校机械方向 → 设 Z 运输零点 → 对齐盘位并设 slot0 → 实测并保存标定 → 打开底盘/升降 EN → 启动。任何中止都会使 Z 与盘位基准失效，需重新确认。</div>
+    <div class="statusline" id="compMsg" style="margin-top:8px;color:var(--warn)"></div>
+  </section>
+
+  <section class="card">
     <h2>循迹 PID 调参 <span>实时生效</span></h2>
     <div class="slider"><div class="top"><span>Kp 比例</span><b id="kpv">0.90</b></div>
       <input type="range" id="kp" min="0" max="5" step="0.05" value="0.9"></div>
@@ -250,16 +314,33 @@ padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const S = { move: null, lift: null, dragging: null, polling: false, status: null };
+const S = { move: null, lift: null, dragging: null, polling: false, status: null,
+  compPolling: false, comp: null, cfgEditing: false };
 
-function api(url) { fetch(url, { cache: "no-store" }).catch(() => {}); }
+async function api(url) {
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok || j.ok === 0) {
+      $("compMsg").textContent = j.msg || ("HTTP " + r.status);
+    }
+    return j;
+  } catch (e) {
+    $("compMsg").textContent = "请求失败：" + e.message;
+    return { ok: 0, msg: e.message };
+  }
+}
 function stopMove() {
-  if (S.move) { clearInterval(S.move.timer); S.move.el.classList.remove("active"); S.move = null; }
-  api("/api/move?vx=0&vy=0&w=0");
+  if (S.move) {
+    clearInterval(S.move.timer); S.move.el.classList.remove("active"); S.move = null;
+    api("/api/move?vx=0&vy=0&w=0");
+  }
 }
 function stopLift() {
-  if (S.lift) { clearInterval(S.lift.timer); S.lift.el.classList.remove("active"); S.lift = null; }
-  api("/api/lift?v=0");
+  if (S.lift) {
+    clearInterval(S.lift.timer); S.lift.el.classList.remove("active"); S.lift = null;
+    api("/api/lift?v=0");
+  }
 }
 function holdMove(el, vx, vy, w) {
   stopMove();
@@ -281,8 +362,13 @@ document.querySelectorAll(".pad button[data-vx], .rot button").forEach(el => {
     holdMove(el, el.dataset.vx, el.dataset.vy, el.dataset.w);
   });
 });
-window.addEventListener("pointerup", () => { stopMove(); stopLift(); });
-window.addEventListener("pointercancel", () => { stopMove(); stopLift(); });
+window.addEventListener("pointerup", () => {
+  stopMove(); stopLift();
+  /* 只在拖动结束 100ms 后清除拖动态，给 change 发布的命令留出返回时间，
+     否则下一次 50ms 轮询可能把滑块拉回旧值。 */
+  setTimeout(() => { S.dragging = null; }, 100);
+});
+window.addEventListener("pointercancel", () => { stopMove(); stopLift(); S.dragging = null; });
 $("btnStop").addEventListener("click", () => {
   stopMove(); stopLift(); api("/api/stop");
 });
@@ -377,13 +463,9 @@ document.querySelectorAll(".srow button[data-rng]").forEach(b => {
   };
 });
 
-/* 物料盘工位 */
-document.querySelectorAll("[data-tray]").forEach(b => {
-  b.onclick = () => {
-    const a = +b.dataset.tray;
-    syncServoUI(4, a);
-    servoSet(4, a, true);
-  };
+/* 连续旋转物料盘只允许逻辑仓位分度，不把角度命令当作绝对位置。 */
+document.querySelectorAll("[data-slot]").forEach(b => {
+  b.onclick = () => api(`/api/competition/cmd?cmd=tray_to&slot=${b.dataset.slot}`);
 });
 
 /* ---- 协议切换 ---- */
@@ -479,13 +561,14 @@ function render(j) {
   }
   $("seq").textContent = "seq " + j.seq;
   $("errv").textContent = "err " + j.err.toFixed(2);
-  $("linestate").textContent = j.mode ? (j.ls ? "循迹：在线" : "循迹：丢线停车") : "循迹：未启用";
-  $("linestate").className = "badge " + (j.mode ? (j.ls ? "ok" : "bad") : "");
+  $("linestate").textContent = j.mode === 1 ? (j.ls ? "循迹：在线" : "循迹：丢线停车") : "循迹：未启用";
+  $("linestate").className = "badge " + (j.mode === 1 ? (j.ls ? "ok" : "bad") : "");
 
-  $("modebadge").textContent = j.mode ? "PID 循迹" : "手动";
+  const modeName = j.mode === 1 ? "PID 循迹" : (j.mode === 2 ? "定步平移" : "手动");
+  $("modebadge").textContent = modeName;
   $("modebadge").className = "badge " + (j.mode ? "ok" : "");
-  $("mMan").classList.toggle("active", !j.mode);
-  $("mLine").classList.toggle("active", !!j.mode);
+  $("mMan").classList.toggle("active", j.mode === 0);
+  $("mLine").classList.toggle("active", j.mode === 1);
 
   $("enChassis").checked = !!j.en[0];
   $("enLift").checked = !!j.en[1];
@@ -537,8 +620,102 @@ async function poll() {
     S.polling = false;
   }
 }
+/* ---- 比赛初始化、标定与自动流程 ---- */
+const colorNames = ["空", "红", "绿", "蓝"];
+async function compCommand(url, success) {
+  const j = await api(url);
+  $("compMsg").textContent = j.ok ? success : (j.msg || "命令被拒绝");
+  await pollComp();
+}
+$("compStart").onclick = () => {
+  if (window.confirm("已确认机械周围安全、全部初始化与标定完成？")) {
+    compCommand("/api/competition/cmd?cmd=start", "比赛流程已启动");
+  }
+};
+$("compAbort").onclick = () => compCommand("/api/stop", "已全局中止，请重新初始化");
+$("zZero").onclick = () => {
+  if (window.confirm("确认当前 Z 滑块处于运输安全零点？")) {
+    compCommand("/api/competition/cmd?cmd=z_zero", "Z 零点已确认");
+  }
+};
+$("trayZero").onclick = () => {
+  if (window.confirm("确认当前盘位已对准装卸点且物料盘为空？")) {
+    compCommand("/api/competition/cmd?cmd=tray_zero", "slot0 已确认，仓位已清空");
+  }
+};
+$("trayNext").onclick = () => compCommand("/api/competition/cmd?cmd=tray_next", "已请求正转 60°");
+
+const cfgElements = Array.from(document.querySelectorAll("[data-cfg]"));
+cfgElements.forEach(el => {
+  /* 失焦不再自动丢弃未保存的输入：只有“保存并确认”成功后才恢复轮询覆盖。 */
+  el.addEventListener("focus", () => S.cfgEditing = true);
+  el.addEventListener("input", () => S.cfgEditing = true);
+});
+$("cfgSave").onclick = async () => {
+  const params = new URLSearchParams({ confirm: "1" });
+  cfgElements.forEach(el => params.set(el.dataset.cfg, el.value));
+  const j = await api("/api/competition/config?" + params.toString());
+  $("compMsg").textContent = j.ok ? "标定已保存并确认" : (j.msg || "保存被拒绝");
+  if (j.ok) {
+    S.cfgEditing = false;
+  }
+  await pollComp();
+};
+
+function renderComp(j) {
+  S.comp = j;
+  $("compState").textContent = j.state;
+  $("compState").className = "badge " + (j.error !== "NONE" ? "bad" : (j.running ? "ok" : ""));
+  const seconds = Math.max(0, j.run_ms / 1000).toFixed(1);
+  $("compInfo").textContent = `已装 ${j.picked}/3 · 已放 ${j.placed}/3 · 运行 ${seconds}s · Z=${j.zpos} 步` +
+    ` | 初始化：Z ${j.zok ? "有效" : "无效"} / 盘 ${j.tray.zero ? "有效" : "无效"}` +
+    ` / 标定 ${j.cfgok ? "已确认" : "未确认"} | 故障：${j.error}`;
+
+  let slots = "";
+  for (let i = 0; i < 6; i++) {
+    const color = j.tray.colors[i];
+    slots += `<div class="slot ${i === j.tray.slot ? "current" : ""}">slot ${i}` +
+      `<br><span class="c${color}">${colorNames[color] || "?"}</span></div>`;
+  }
+  $("compSlots").innerHTML = slots;
+  $("visionInfo").textContent = `K230 ${j.link.online ? "在线" : "离线"} · 模式 ${j.link.mode}/${j.link.ack}` +
+    ` · ${j.vision.detected ? (j.vision.stable ? "稳定" : "检测中") : "无目标"}` +
+    ` · ${colorNames[j.vision.color] || "未知"} (${j.vision.cx},${j.vision.cy})` +
+    ` · 置信度 ${j.vision.conf}% · 数据年龄 ${j.vision.age}ms · 盘 slot${j.tray.slot}→${j.tray.target}`;
+
+  $("compStart").disabled = !!j.running;
+  $("zZero").disabled = !!j.running;
+  $("trayZero").disabled = !!j.running;
+  $("trayNext").disabled = !!j.running;
+  if (!S.cfgEditing) {
+    cfgElements.forEach(el => {
+      if (document.activeElement !== el &&
+          Object.prototype.hasOwnProperty.call(j.cfg, el.dataset.cfg)) {
+        el.value = j.cfg[el.dataset.cfg];
+      }
+    });
+  }
+}
+
+async function pollComp() {
+  if (S.compPolling) return;
+  S.compPolling = true;
+  try {
+    const r = await fetch("/api/competition", { cache: "no-store" });
+    if (!r.ok) throw new Error("http " + r.status);
+    renderComp(await r.json());
+  } catch (e) {
+    $("compState").textContent = "状态离线";
+    $("compState").className = "badge bad";
+  } finally {
+    S.compPolling = false;
+  }
+}
+
 poll();
 setInterval(poll, 50);
+pollComp();
+setInterval(pollComp, 200);
 </script>
 </body>
 </html>

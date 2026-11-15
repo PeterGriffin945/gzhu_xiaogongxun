@@ -1,40 +1,34 @@
 /**
  * @file lu9685.c
- * @brief LU9685 舵机板驱动（单字节角度 / 双字节脉宽 双协议 + 点动定时）
- *
- * 注意：LU9685 不是 PCA9685。协议格式为 [通道寄存器, 数据...]，一次写操作
- * 切换一次通道。默认单字节角度：START | ADDR+W | CH | ANGLE | STOP。
- * 若模块固件使用脉宽寄存器，可切换到双字节 500~2500us 模式。
- *
- * 360° 连续旋转舵机：90 附近停转，偏离中位越远转速越快，方向随偏离方向
- * 改变。用 lu9685_pulse_start() 定时点动即可用时间控制转角。
+ * @brief LU9685 舵机板驱动，支持角度/脉宽协议与连续舵机安全点动
  */
 #include "lu9685.h"
 
 #include <math.h>
 #include <stddef.h>
-#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
-#include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
 #include "app_config.h"
 #include "i2c_bus.h"
 
-static const char *TAG = "lu9685";
-
-#define LU9685_MAX_CH       16
+#define LU9685_MAX_CH 16
 #define LU9685_PULSE_TICK_MS 5
 #define LU9685_DEFAULT_CENTER 90
+#define LU9685_STOP_RETRIES 3
+
+static const char *TAG = "lu9685";
 
 typedef struct {
-    bool     active;
-    int64_t  deadline_us;
-    uint8_t  stop_angle;
+    bool active;
+    int64_t deadline_us;
+    uint8_t stop_angle;
+    uint8_t retries;
+    bool faulted;
 } lu9685_pulse_t;
 
 static i2c_master_dev_handle_t s_dev;
@@ -42,22 +36,20 @@ static uint8_t s_addr;
 static uint8_t s_angles[LU9685_MAX_CH];
 static uint8_t s_center[LU9685_MAX_CH];
 static volatile uint8_t s_proto = LU9685_PROTO_ANGLE;
-
 static portMUX_TYPE s_pulse_mux = portMUX_INITIALIZER_UNLOCKED;
 static lu9685_pulse_t s_pulse[LU9685_MAX_CH];
+static bool s_pulse_task_ready;
 
 static esp_err_t lu9685_write(uint8_t channel, uint8_t angle)
 {
     uint8_t mode = s_proto;
     uint8_t buf[3];
     size_t len;
-
     if (mode == LU9685_PROTO_ANGLE) {
         buf[0] = channel;
         buf[1] = angle;
         len = 2;
     } else {
-        /* 0~180° → 500~2500us */
         uint16_t us = (uint16_t)lroundf(500.0f + (float)angle * (2000.0f / 180.0f));
         buf[0] = channel;
         if (mode == LU9685_PROTO_PULSE_LO) {
@@ -81,7 +73,13 @@ static esp_err_t lu9685_write(uint8_t channel, uint8_t angle)
     return err;
 }
 
-/* ---------------- 点动定时任务 ---------------- */
+static void clear_pulse(uint8_t channel)
+{
+    taskENTER_CRITICAL(&s_pulse_mux);
+    s_pulse[channel].active = false;
+    taskEXIT_CRITICAL(&s_pulse_mux);
+}
+
 static void lu9685_pulse_task(void *arg)
 {
     (void)arg;
@@ -90,29 +88,33 @@ static void lu9685_pulse_task(void *arg)
         for (int i = 0; i < LU9685_MAX_CH; ++i) {
             uint8_t stop = 0;
             bool fire = false;
-
             taskENTER_CRITICAL(&s_pulse_mux);
             if (s_pulse[i].active && now >= s_pulse[i].deadline_us) {
-                s_pulse[i].active = false;
                 stop = s_pulse[i].stop_angle;
                 fire = true;
+                s_pulse[i].active = false;
             }
             taskEXIT_CRITICAL(&s_pulse_mux);
 
             if (fire) {
-                ESP_LOGI(TAG, "pulse CH%d done -> %u", i, stop);
-                lu9685_set_angle((uint8_t)i, stop);
+                esp_err_t err = lu9685_write((uint8_t)i, stop);
+                if (err == ESP_OK) {
+                    s_angles[i] = stop;
+                } else if (s_pulse[i].retries < LU9685_STOP_RETRIES) {
+                    /* 停止写失败时快速有界重试；重试期间仍保留点动记录。 */
+                    s_pulse[i].retries++;
+                    taskENTER_CRITICAL(&s_pulse_mux);
+                    s_pulse[i].active = true;
+                    s_pulse[i].deadline_us = now + 5000;
+                    taskEXIT_CRITICAL(&s_pulse_mux);
+                } else {
+                    s_pulse[i].faulted = true;
+                    ESP_LOGE(TAG, "pulse CH%d stop failed after retries", i);
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(LU9685_PULSE_TICK_MS));
     }
-}
-
-static esp_err_t lu9685_start_pulse_task(void)
-{
-    BaseType_t ret = xTaskCreatePinnedToCore(lu9685_pulse_task, "srv_pulse",
-                                             4096, NULL, 3, NULL, 1);
-    return (ret == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t lu9685_init(void)
@@ -120,21 +122,21 @@ esp_err_t lu9685_init(void)
     if (i2c_bus_handle() == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-
     for (int i = 0; i < LU9685_MAX_CH; ++i) {
         s_angles[i] = LU9685_DEFAULT_CENTER;
         s_center[i] = LU9685_DEFAULT_CENTER;
         s_pulse[i].active = false;
+        s_pulse[i].faulted = false;
     }
 
-    esp_err_t task_err = lu9685_start_pulse_task();
-    if (task_err != ESP_OK) {
-        ESP_LOGE(TAG, "create pulse task failed");
+    BaseType_t ret = xTaskCreatePinnedToCore(lu9685_pulse_task, "srv_pulse", 4096, NULL, 3, NULL, 1);
+    s_pulse_task_ready = (ret == pdPASS);
+    if (!s_pulse_task_ready) {
+        ESP_LOGE(TAG, "pulse task unavailable; continuous servo jog disabled");
     }
 
     uint8_t candidates[2] = { LU9685_ADDR_A, LU9685_ADDR_B };
     bool found = false;
-
     if (!i2c_bus_lock(I2C_TIMEOUT_MS)) {
         return ESP_ERR_TIMEOUT;
     }
@@ -159,29 +161,28 @@ esp_err_t lu9685_init(void)
     i2c_bus_unlock();
 
     if (!found) {
-        ESP_LOGW(TAG, "LU9685 not found on TCA CH%d (tried 0x%02X/0x%02X)",
-                 TCA_CH_SERVO, LU9685_ADDR_A, LU9685_ADDR_B);
         return ESP_ERR_NOT_FOUND;
     }
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "LU9685 add device failed: %s", esp_err_to_name(err));
         s_dev = NULL;
         return err;
     }
 
-    ESP_LOGI(TAG, "LU9685 @0x%02X ready (CH%d base / CH%d tray / CH%d gripper)",
-             s_addr, LU9685_CH_BASE, LU9685_CH_TRAY, LU9685_CH_GRIPPER);
-
-    /* 上电默认中位，避免舵机猛地打到极限 */
     lu9685_set_angle(LU9685_CH_BASE, LU9685_DEFAULT_CENTER);
     lu9685_set_angle(LU9685_CH_TRAY, LU9685_DEFAULT_CENTER);
     lu9685_set_angle(LU9685_CH_GRIPPER, LU9685_DEFAULT_CENTER);
+    ESP_LOGI(TAG, "LU9685 @0x%02X ready", s_addr);
     return ESP_OK;
 }
 
 bool lu9685_available(void)
 {
     return s_dev != NULL;
+}
+
+bool lu9685_pulse_ready(void)
+{
+    return s_pulse_task_ready;
 }
 
 uint8_t lu9685_address(void)
@@ -195,9 +196,6 @@ esp_err_t lu9685_set_protocol(uint8_t mode)
         return ESP_ERR_INVALID_ARG;
     }
     s_proto = mode;
-    ESP_LOGI(TAG, "protocol -> %s",
-             mode == LU9685_PROTO_ANGLE ? "angle" :
-             (mode == LU9685_PROTO_PULSE_LO ? "pulse(lo-hi)" : "pulse(hi-lo)"));
     return ESP_OK;
 }
 
@@ -214,14 +212,15 @@ esp_err_t lu9685_set_angle(uint8_t channel, uint8_t angle)
     if (angle > 180) {
         angle = 180;
     }
-    s_angles[channel] = angle;
-
     if (s_dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = lu9685_write(channel, angle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "set ch%u=%u failed: %s", channel, angle, esp_err_to_name(err));
+    if (err == ESP_OK) {
+        s_angles[channel] = angle;
+        /* 只有新角度真正写成功才取消点动定时，否则保留停止定时器，
+           避免一次 I2C 失败让连续舵机失去自动停止保护。 */
+        clear_pulse(channel);
     }
     return err;
 }
@@ -240,7 +239,6 @@ esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle)
         angle = 180;
     }
     s_center[channel] = angle;
-    ESP_LOGI(TAG, "center CH%u -> %u", channel, angle);
     return ESP_OK;
 }
 
@@ -255,47 +253,65 @@ esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
     if (channel >= LU9685_MAX_CH) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!s_pulse_task_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (speed_angle > 180) {
         speed_angle = 180;
     }
     if (duration_ms > 60000) {
         duration_ms = 60000;
     }
-
-    uint8_t stop;
-    if (stop_angle < 0) {
-        stop = s_center[channel];
-    } else {
-        stop = (uint8_t)((stop_angle > 180) ? 180 : stop_angle);
-    }
+    uint8_t stop = (stop_angle < 0) ? s_center[channel]
+                                   : (uint8_t)((stop_angle > 180) ? 180 : stop_angle);
 
     esp_err_t err = lu9685_set_angle(channel, speed_angle);
     if (err != ESP_OK) {
         return err;
     }
-
-    int64_t deadline = esp_timer_get_time() + (int64_t)duration_ms * 1000;
     taskENTER_CRITICAL(&s_pulse_mux);
-    s_pulse[channel].active = true;
-    s_pulse[channel].deadline_us = deadline;
+    s_pulse[channel].deadline_us = esp_timer_get_time() + (int64_t)duration_ms * 1000;
     s_pulse[channel].stop_angle = stop;
+    s_pulse[channel].retries = 0;
+    s_pulse[channel].faulted = false;
+    s_pulse[channel].active = true;
     taskEXIT_CRITICAL(&s_pulse_mux);
-
-    ESP_LOGI(TAG, "pulse CH%u speed=%u dur=%ums stop=%u", channel, speed_angle,
-             (unsigned)duration_ms, stop);
     return ESP_OK;
+}
+
+esp_err_t lu9685_pulse_cancel(uint8_t channel)
+{
+    if (channel >= LU9685_MAX_CH) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    clear_pulse(channel);
+    if (s_dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = lu9685_write(channel, s_center[channel]);
+    if (err == ESP_OK) {
+        s_angles[channel] = s_center[channel];
+    } else {
+        s_pulse[channel].faulted = true;
+    }
+    return err;
+}
+
+bool lu9685_pulse_active(uint8_t channel)
+{
+    return (channel < LU9685_MAX_CH) && s_pulse[channel].active;
+}
+
+bool lu9685_pulse_faulted(uint8_t channel)
+{
+    return (channel < LU9685_MAX_CH) && s_pulse[channel].faulted;
 }
 
 void lu9685_pulse_stop_all(void)
 {
     for (int i = 0; i < LU9685_MAX_CH; ++i) {
-        bool was;
-        taskENTER_CRITICAL(&s_pulse_mux);
-        was = s_pulse[i].active;
-        s_pulse[i].active = false;
-        taskEXIT_CRITICAL(&s_pulse_mux);
-        if (was) {
-            lu9685_set_angle((uint8_t)i, s_center[i]);
+        if (s_pulse[i].active || i == LU9685_CH_TRAY) {
+            lu9685_pulse_cancel((uint8_t)i);
         }
     }
 }
