@@ -1,9 +1,9 @@
 # 工创赛麦克纳姆轮小车 · ESP32-S3 底层驱动 + Web 调试台
 
-基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘与机械臂控制系统。
+基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xDB3C0 ≈ 877 KiB，2MB Flash 的 1500K app 分区剩余 42%。
+> 固件 0xE6480（943232 字节，约 921 KiB），2MB Flash 的 1500K app 分区剩余 39%。
 
 ---
 
@@ -12,23 +12,35 @@
 ```
 helloworld/
 ├── CMakeLists.txt              # 顶层工程
-├── sdkconfig.defaults          # FreeRTOS 1000Hz / 1.5MB app 分区等默认配置
+├── sdkconfig.defaults          # FreeRTOS 1000Hz / 1.5MB app 分区 / USB 控制台等默认配置
 ├── README.md
-├── docs/DRIVER_API.md          # ★ 驱动接口手册（二次开发 / 其他 agent 调用）
+├── docs/
+│   └── DRIVER_API.md           # ★ 驱动接口手册（二次开发 / 其他 agent 调用）
+├── k230/                       # K230D / CanMV 视觉端
+│   ├── config.py               # UART、心跳、检测周期、LAB 阈值、ROI
+│   ├── main.py                 # 主循环：收命令、ACK、心跳、检测上报、屏幕状态
+│   ├── protocol.py             # A5 5A 帧编解码、CRC8、流式解析、发送序号
+│   └── vision.py               # blob 识别、颜色投票、置信度
 └── main/
     ├── CMakeLists.txt          # 组件源文件与依赖
     ├── main.c                  # 启动流程、任务初始化、健康检查
-    ├── app_config.h            # ★ 全部引脚 / I2C 地址 / 机械参数
-    ├── stepper.h / .c          # 5 轴 DDS 脉冲发生器（20kHz GPTimer ISR + 1kHz 梯形斜坡）
+    ├── app_config.h            # ★ 全部引脚 / I2C 地址 / 机械与速度参数
+    ├── stepper.h / .c          # 5 轴 DDS 脉冲发生器 + 开环定步/位置计数
     ├── mecanum.h / .c          # O 型麦轮逆运动学
     ├── i2c_bus.h / .c          # I2C 主总线 + TCA9548A 复位/选通道/互斥锁
     ├── ads1115.h / .c          # 双 ADS1115 乒乓流水采样（Core 1）
-    ├── lu9685.h / .c           # LU9685 单字节协议舵机驱动
+    ├── lu9685.h / .c           # LU9685 三协议舵机 + 连续舵机安全点动
     ├── line_follow.h / .c      # 8 路模拟量加权 PID
-    ├── chassis.h / .c          # 手动 / 循迹双模式、100Hz 控制环、看门狗
+    ├── chassis.h / .c          # 手动 / 循迹 / 定步平移 / 升降统一控制
+    ├── vision_protocol.h / .c  # 视觉帧常量、CRC8、解析与编码
+    ├── k230_link.h / .c        # UART1 链路：心跳、模式命令、ACK、检测结果
+    ├── station_detector.h / .c # 8 路探头横线/工位检测（上升沿触发）
+    ├── tray_controller.h / .c  # 6 工位物料盘分度与颜色台账
+    ├── manipulator.h / .c      # 升降 + 底座 + 夹爪动作脚本
+    ├── competition.h / .c      # 自动比赛状态机、标定与安全约束
     ├── wifi_sta.h / .c         # Wi-Fi STA + 断线重连 + 关闭省电
     ├── web_server.h / .c       # HTTP API
-    └── web_page.h              # 内嵌单页 HTML/JS 控制台
+    └── web_page.h              # 内嵌单页 HTML/JS 控制台（含比赛卡片）
 ```
 
 ---
@@ -52,6 +64,8 @@ helloworld/
 
 - 上电后 `stepper_init()` **最先执行**，两路 EN 立即拉高释放力矩，避免发热。
 - 左侧 DIR 取反可在运行时用 `stepper_set_dir_invert(AXIS_LF/LR, true/false)` 调整。
+- 升降轴支持**开环定步**：位置计数来自 ISR 实际发出的 STEP 脉冲，不是机械反馈；
+  自动比赛依赖上电后的 Z 零点标定建立坐标。
 
 ### 2.2 I2C 与传感器
 
@@ -73,21 +87,160 @@ helloworld/
 可运行时切到双字节 `[ch, pulse_lo, pulse_hi]`（500~2500us）或大端版本，
 在网页"协议模式"下拉框或 `/servo_proto?mode=0|1|2` 切换。
 
+### 2.3 K230 视觉串口
+
+| 项目 | 值 |
+|---|---|
+| ESP32 逻辑串口 | UART1（重映射到已确认的 UART0 排针） |
+| ESP32 TX | GPIO 43 → K230 RX |
+| ESP32 RX | GPIO 44 ← K230 TX |
+| 波特率 / 格式 | 115200，8N1，无硬件流控 |
+| K230 端口 | PORT2（UART2），115200 8N1，不做额外引脚映射 |
+| ESP32 控制台 | 已迁至 **USB Serial/JTAG**（`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`） |
+
+- 两板必须共地；ESP32 的 GPIO43/44 与 K230 PORT2 的 TX/RX 交叉连接。
+- 因为 GPIO43/44 被视觉链路占用，`idf.py monitor` 需走 ESP32-S3 原生 USB 口，
+  不要再接 UART0 排针。
+- 上电后 `k230_link_init()` 会主动发送一次 `IDLE` 命令，把可能停留在上次模式的
+  K230 拉回待机。
+
+**帧格式**（ESP32 与 K230 完全一致）：
+
+| 偏移 | 字节 | 字段 |
+|---|---|---|
+| 0~1 | 2 | 同步字 `A5 5A` |
+| 2 | 1 | 版本 `0x01` |
+| 3 | 1 | 类型 |
+| 4 | 1 | 序号 seq（0~255 循环） |
+| 5 | 1 | payload 长度（0~32） |
+| 6… | N | payload |
+| 末尾 | 1 | CRC8 |
+
+CRC8 参数：多项式 **0x07**、初值 0、无反射、xorout 0；覆盖 **版本到 payload 末尾**
+（即帧头 `0xA5 0x5A` 不参与计算）。帧开销固定 7 字节，单帧最大 39 字节。
+
+| 类型 | 名称 | 方向 | payload |
+|---|---|---|---|
+| `0x01` | COMMAND | ESP32 → K230 | 1 字节模式：0 IDLE / 1 MATERIAL / 2 RING / 3 TRAY |
+| `0x02` | HEARTBEAT | 双向 | 空，**500ms** 周期 |
+| `0x03` | ACK | K230 → ESP32 | `command_seq, current_mode` |
+| `0x10` | DETECTION | K230 → ESP32 | 11 字节，见下 |
+
+DETECTION 的 11 字节布局：
+
+```
+mode, color, flags, cx_lo, cx_hi, cy_lo, cy_hi, area_lo, area_hi, confidence, reserved
+```
+
+- 坐标与面积均为小端 16 位；`flags` bit0 = detected，bit1 = stable。
+- `color`：0 未知 / 1 红 / 2 绿 / 3 蓝。
+- 无目标时也会按周期上报，颜色、坐标、面积、置信度清零；ESP32 收到后把
+  `stable` 强制为 false。
+- K230 在 `DEBUG_UART_LOG=False` 时不会向协议 UART 写任何文本；**正常比赛必须保持关闭**，
+  否则 `K230 ...` 文本会污染二进制帧解析。
+
 ---
 
-## 3. 实时性设计
+## 3. 自动比赛流程（三取三放）
 
-### 3.1 20 kHz DDS 脉冲（`stepper.c`）
+### 3.1 状态机
+
+```
+MANUAL ──start──► ARM_STOW
+                      │
+                      ▼
+              ┌─► SOURCE_TRAVEL ─► SOURCE_BRAKE ─► SOURCE_IDENTIFY ─► SOURCE_ALIGN
+              │        ▲                                                        │
+              │        │                                                        ▼
+              │   SOURCE_INDEX ◄────────────────────────────── SOURCE_PICK_LOAD
+              │        │（已装 <3）                                              │
+              │        │                                                        │（已装 3）
+              │        │                                                        ▼
+              │        │                                                  TARGET_TRAVEL
+              │        │                                                        │
+              │        │                                                        ▼
+              │        │                             TARGET_BRAKE ─► TARGET_IDENTIFY
+              │        │                                                        │
+              │        │                                                        ▼
+              │        │                              TARGET_ALIGN ─► TARGET_SELECT
+              │        │                                                        │
+              │        │                                                        ▼
+              │        │                                                  TARGET_PLACE
+              │        │                                                        │
+              │        └────────（已放 <3）───────────────────────────────────────┤
+              │                                                                 │（已放 3）
+              │                                                                 ▼
+              │                                                             FINISHED
+              └─（任意状态故障 / 超时 / 手动中止）──────────────────────────► ABORTED
+```
+
+| 状态 | 行为 |
+|---|---|
+| `MANUAL` | 待机，网页手动命令可用 |
+| `ARM_STOW` | 收臂脚本：张开夹爪 → Z 回运输位 → 底座回运输角 |
+| `SOURCE_TRAVEL` | 切循迹模式驶向物料区；横线事件触发后平滑停车 |
+| `SOURCE_BRAKE` | 等待四轮实际速度降到 0；超时按当前加速度动态计算 |
+| `SOURCE_IDENTIFY` | K230 进入 MATERIAL 模式，等待稳定颜色与置信度达标 |
+| `SOURCE_ALIGN` | 按视觉误差做短距开环平移，直到落在容差内或达到最大次数 |
+| `SOURCE_PICK_LOAD` | 执行"地面抓取 → 装入盘内 → 回运输位"动作脚本 |
+| `SOURCE_INDEX` | 物料盘正转一个工位（默认 60°），已装 3 个后转目标区 |
+| `TARGET_TRAVEL` | 循迹驶向靶环区 |
+| `TARGET_BRAKE` | 停车等待 |
+| `TARGET_IDENTIFY` | K230 进入 RING 模式，识别目标颜色 |
+| `TARGET_ALIGN` | 按靶环基准做视觉对位 |
+| `TARGET_SELECT` | 在物料盘中查找目标颜色并分度到对应工位 |
+| `TARGET_PLACE` | 执行"盘内取出 → 放到靶环 → 回运输位"动作脚本 |
+| `FINISHED` | 已放满 3 个，正常结束 |
+| `ABORTED` | 任意故障、超时或手动中止 |
+
+### 3.2 启动前置条件（`competition_start()` 逐项检查）
+
+必须**同时满足**以下条件，否则返回 `ESP_ERR_INVALID_STATE`：
+
+1. 当前未在运行（`running == false`）。
+2. 标定已确认（`config_confirmed == true`，网页"保存并确认本次标定"）。
+3. Z 零点有效（`z_zero_valid == true`，网页"设当前 Z 为运输零点"）。
+4. 盘位零点有效（`tray.zero_valid == true`，网页"设当前盘位为 slot0"）。
+5. K230 在线（1.5s 内收到过任意合法帧）。
+6. 两路 EN 都使能（底盘 M1~M4、升降 M5）。
+7. LU9685 在线、脉冲后台任务可用，且 CH4 无停止失败故障。
+8. ADS1115 已有有效采样帧。
+9. 所有执行器静止：物料盘空闲、机械臂空闲、无平移运动、升降空闲。
+
+启动成功后先 `chassis_stop()` 强制回到手动并平滑停车，再重新应用标定、
+安装升降软限位 `[0, z_max]`，然后进入 `ARM_STOW`。
+
+### 3.3 中止语义与超时
+
+- **中止（ABORTED）**：停止机械臂、底盘、物料盘分度，取消所有舵机点动，
+  把 K230 切回 IDLE，并**同时作废 Z 零点与盘位零点**。重新启动前必须重新
+  设 Z 零点、盘位零点并重新确认标定。
+- **6 分钟总时限**：`run_elapsed_ms >= 360000` 立即以 `TIMEOUT` 中止。
+- **丢线超时**：循迹阶段连续 **3s** 看不到线，以 `SENSOR` 中止，
+  避免空等到 6 分钟总超时。
+- **刹车超时**：停车后等待四轮速度归零，允许时间为
+  `max(1800ms, 当前最大轮速 / 加速度 × 1000 + 800ms)`；超时以 `CHASSIS` 中止。
+  低加速度（如 100 步/秒²）会自动放宽，避免误报。
+- **其他超时**：识别 12s、视觉对位 24s、单次取放动作 180s、传感器帧停滞 500ms。
+- 网页 **“■ 全局中止”**（`/api/stop`）等价于手动中止，同样会作废两个零点。
+
+---
+
+## 4. 实时性设计
+
+### 4.1 20 kHz DDS 脉冲（`stepper.c`）
 
 - GPTimer 1 MHz 计数、50us 报警周期，ISR 中用 32 位相位累加器同时产生 5 路 STEP。
 - STEP 高电平固定 **50us（≥3us）**，相邻脉冲之间至少 50us 低电平，单轴最高 8 kHz。
 - 相位累加每拍无条件执行，保证步频精度；速度 → 相位增量在 1 kHz 任务中换算。
 - 梯形加减速：
-  - 目标非零且当前速度为 0 时，**直接跳到 200 步/秒**，跨越低速共振区；
+  - 连续调速目标非零且当前速度为 0 时，**直接跳到 200 步/秒**，跨越低速共振区；
+  - 开环定步运动起步速度 40 步/秒，并按剩余脉冲数限制速度，形成梯形/三角形曲线；
   - 默认加速度 **3000 步/秒²**，可运行时调整（Web 滑块或 `stepper_set_accel()`）；
   - **换向必须先减速到 0**，再切换 DIR，避免带速换向丢步。
+- 定步运动的位置计数在 ISR 内累加，最后一个脉冲由 ISR 自己封口，不再补发。
 
-### 3.2 ADS1115 乒乓流水（`ads1115.c`）
+### 4.2 ADS1115 乒乓流水（`ads1115.c`）
 
 - 新 I2C 主驱动，所有事务 **20ms 超时**，总线级互斥锁防止通道错切。
 - 860 SPS、±6.144V（PGA=2/3）、单次转换；单次转换 1.163ms，等待 1.25ms。
@@ -95,30 +248,36 @@ helloworld/
 - 8 路完整刷新约 **6~8ms**，刷新周期 12ms（约 83Hz），彻底消除秒级滞后。
 - 单次总线错误沿用上一拍缓存值，不会冻结整帧数据。
 
-### 3.3 任务/核心分配
+### 4.3 任务/核心分配
 
 | 核心 | 任务 | 周期/优先级 |
 |---|---|---|
 | Core 0 | GPTimer 脉冲 ISR | 50us / 中断 |
-| Core 0 | 步进速度斜坡 | 1kHz / prio 12 |
+| Core 0 | 步进速度斜坡 `step_ramp` | 1kHz / prio 12 |
+| Core 0 | K230 链路 `k230_link` | 20ms / prio 4 |
 | Core 0 | Wi-Fi、HTTP 服务 | 事件驱动 |
-| Core 1 | ADS1115 采样 | 12ms / prio 4 |
-| Core 1 | 底盘控制环 | 10ms / prio 6 |
+| Core 1 | ADS1115 采样 `ads_sample` | 12ms / prio 4 |
+| Core 1 | 底盘控制环 `chassis` | 10ms / prio 6 |
+| Core 1 | 比赛状态机 `competition` | 10ms / prio 3 |
+| Core 1 | 舵机点动计时 `srv_pulse` | 5ms / prio 3 |
 
 采样任务优先级低于控制环，等待转换的自旋不会阻塞 100Hz 控制。
+比赛状态机与舵机点动优先级较低，不会挤占底盘与采样实时性。
 
-### 3.4 安全机制
+### 4.4 安全机制
 
 - Web 遥控指令 **400ms 看门狗**：浏览器断开或松键后自动停车。
-- 升降点动 **500ms 看门狗**。
-- EN 关闭时底盘/升降目标强制清零。
+- 升降点动 **500ms 看门狗**；定步升降运动不受该看门狗影响，由剩余步数结束。
+- EN 关闭时底盘/升降目标强制清零，并取消进行中的定步运动。
+- 升降软限位 `[0, z_max]`：点动与定步移动都会检查，防止开环越界。
 - 循迹丢线：保持 150ms 上次转向，超时立即停车。
-- 360° 舵机点动由后台任务计时，到点自动回中位；浏览器关闭也不会持续转。
+- 自动比赛：传感器停滞 500ms、丢线 3s、K230 离线、舵机故障、动作超时都会中止。
+- 360° 舵机点动由后台任务计时，到点自动回中位；停止写失败会重试 3 次并置故障位。
 - 停车为梯形减速，急停可调用 `stepper_abort_all()`。
 
 ---
 
-## 4. 机械参数（必须按实车修改）
+## 5. 机械参数（必须按实车修改）
 
 在 `main/app_config.h` 中：
 
@@ -136,9 +295,13 @@ RR = vy + vx + k·ω      RF = vy - vx + k·ω
 LF = vy + vx - k·ω      LR = vy - vx - k·ω      k = (轴距 + 轮距) / 2
 ```
 
+自动比赛的机械/视觉标定不在 `app_config.h`，而在网页比赛卡片或
+`/api/competition/config` 中设置；默认值只是占位，必须按实车实测。
+开环升降约 **1 步 ≈ 1.02mm**（200 步/圈，丝杆导程需按实车确认）。
+
 ---
 
-## 5. 编译与烧录
+## 6. 编译与烧录
 
 ```bash
 # 1. 进入 ESP-IDF 环境（Windows PowerShell）
@@ -161,19 +324,23 @@ idf.py -p COM18 flash monitor
 >   IDF 6.x 已移除旧 `driver/i2c.h`，本工程无需修改。
 > - `sdkconfig` 已修改为 **FreeRTOS 1000Hz**、**1500K app 分区**（2MB Flash），
 >   对应的 `sdkconfig.defaults` 也已提供，删除 sdkconfig 重新生成时不会丢失。
+> - 控制台已切到 **USB Serial/JTAG**（UART0 排针留给 K230 链路），
+>   若 `idf.py monitor` 看不到日志，请确认使用的是开发板原生 USB 口。
 > - 若 Flash 实际是 4/8MB，可在 `idf.py menuconfig → Serial flasher config` 调大。
 
 ---
 
-## 6. Web 调试台使用
+## 7. Web 调试台使用
 
 1. 上电后串口会打印 Wi-Fi 连接过程与 IP，例如：
    `I (xxxx) wifi: connected! open http://192.168.1.23/`
 2. 手机/电脑连同一个路由器，浏览器打开该 IP。
 3. 页面每 **50ms** 轮询 `/api/status`，实时显示：
    - 8 路电压条、阈值线、黑白判定
-   - 底盘/升降 EN 状态、四种轮速、采样序号
+   - 底盘/升降 EN 状态、四种轮速、采样序号、升降位置 `zpos`
    - 舵机当前角度、Wi-Fi 状态
+4. 比赛卡片每 **200ms** 轮询 `/api/competition`，显示状态机、已装/已放、
+   Z 与盘位零点有效性、K230 在线/模式、视觉坐标与置信度。
 
 操作说明：
 
@@ -182,33 +349,52 @@ idf.py -p COM18 flash monitor
 - **底盘航速 / 升降速度**：两个实时滑块，100~1500 / 100~1200 步/秒，
   手动遥控、循迹基础航速、M5 升降同时生效。
 - **手动 / PID 循迹**：一键切换模式。
-- **底盘 EN / 升降 EN**：独立开关，关闭即释放力矩。
-- **升降点动**：按住上升/下降，松开停止。
+- **底盘 EN / 升降 EN**：独立开关，关闭即释放力矩；自动比赛要求两路都打开。
+- **升降点动**：按住上升/下降，松开停止；只取符号，幅值由升降速度决定。
 - **舵机**：拖动滑块时按 30ms 节流实时下发；电脑端鼠标滚轮可按 1° 微调；
   两侧 `−1° / +1°` 微调，右侧"中位"一键回中。物料盘另有 5 个工位快捷按钮。
 - **360° 连续舵机**：选择通道 → 设速度角（<90 正转，>90 反转）→ 设持续时间，
   点"点动"后到点自动停止；中位停止值可校准到 85~95。
 - **阈值 0~5.0V / 极性 / PID / 加速度**：实时生效。
 
+### 7.1 比赛卡片使用顺序
+
+1. **机械低速点动**：确认升降、底座、夹爪方向正确，物料盘能正转分度。
+2. **标定**：展开"动作、视觉、分度与横线标定"，填写实测 Z 步数、底座角度、
+   夹爪角度、视觉基准与容差、盘位速度角/时间、横线检测参数，点
+   **“保存并确认本次标定”**（等价 `/api/competition/config?confirm=1`）。
+3. **Z 零点**：把升降停在运输安全位，点 **“设当前 Z 为运输零点”**。
+4. **盘位零点**：把物料盘 slot0 对准装卸点并清空，点 **“设当前盘位为 slot0”**。
+5. **打开 EN**：底盘与升降 EN 都打开。
+6. **启动**：点 **“▶ 启动三取三放”**，状态从 `MANUAL` 进入 `ARM_STOW`。
+7. **急停**：任何时候点 **“■ 全局中止”**；中止后 Z 与盘位零点都会失效，
+   必须重新执行第 3、4 步。
+
+> 自动比赛运行期间，手动运动/舵机/调速/标定接口会返回 **409 Conflict**；
+> `start / abort / z_zero / confirm` 不受此限制。
+
 ---
 
-## 7. HTTP API（全部 GET，返回 `{"ok":1}`）
+## 8. HTTP API（全部 GET，成功返回 `{"ok":1}`）
 
 | 接口 | 参数 | 说明 |
 |---|---|---|
 | `/api/status` | — | 完整状态 JSON |
-| `/api/move` | `vx` `vy` `w` | 手动速度（m/s, m/s, rad/s），非零时自动切手动模式 |
+| `/api/move` | `vx` `vy` `w` | 手动方向指令（只决定方向/比例，峰值归一化到底盘航速），非零时自动切手动模式 |
 | `/api/mode` | `m=0\|1` | 0 手动，1 循迹 |
 | `/api/en` | `chassis=0\|1` `lift=0\|1` | 1 = 锁轴使能 |
 | `/api/lift` | `v` | 升降点动，只取符号（正=上升/负=下降），速度由 `lift_speed` 决定 |
 | `/api/servo` | `ch` `a` | LU9685 通道与角度 0~180（按当前协议） |
 | `/api/line` | `th` `inv` `rev` `kp` `ki` `kd` `om` `accel` | 阈值/极性/探头顺序/PID/转向上限/加速度 |
 | `/thresh` | `th`（或 `v`） | 黑白阈值 0.0~5.0V |
-| `/speed` | `chassis` `lift` | 基础转速 100~1500 / 100~1200 步/秒，立即生效 |
+| `/speed`（别名 `/api/speed`） | `chassis` `lift` | 基础转速 100~1500 / 100~1200 步/秒，立即生效 |
 | `/servo_proto` | `mode=0\|1\|2` | 0 单字节角度，1/2 双字节脉宽（小端/大端） |
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动，到点回中位 |
 | `/servo_center` | `ch` `a` | 校准该通道中位停止值（建议 85~95） |
-| `/api/stop` | — | 平滑停车 |
+| `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
+| `/api/competition` | — | 比赛状态 JSON（状态机、零点、K230、视觉、标定） |
+| `/api/competition/cmd` | `cmd=start\|abort\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`；`tray_to` 另需 `slot=0..5` | 比赛命令 |
+| `/api/competition/config` | `zpick ztray zplace zmax bstow bpick btray bplace gopen gclose bms gms lsps mcx mcy rcx rcy tol minconf maxiter xsign ysign nudge asps tspeed tms sblack sconfirm sclear srearm sinterval`，可选 `confirm=1` | 保存标定并可选确认 |
 
 示例：
 
@@ -219,11 +405,15 @@ curl "http://192.168.1.23/speed?chassis=450&lift=400"
 curl "http://192.168.1.23/api/line?kp=1.2&kd=0.05"
 curl "http://192.168.1.23/api/servo?ch=4&a=135"
 curl "http://192.168.1.23/servo_pulse?ch=4&speed_angle=60&duration_ms=500"
+curl "http://192.168.1.23/api/competition/config?confirm=1&nudge=3&tol=8"
+curl "http://192.168.1.23/api/competition/cmd?cmd=z_zero"
+curl "http://192.168.1.23/api/competition/cmd?cmd=start"
+curl "http://192.168.1.23/api/stop"
 ```
 
 ---
 
-## 8. 调试建议
+## 9. 调试建议
 
 1. **先确认方向**：抬空车，在手动模式逐个方向测试；若某个轮子反向，
    修改 `app_config.h` 的 `dir_invert` 或调用 `stepper_set_dir_invert()`。
@@ -236,4 +426,12 @@ curl "http://192.168.1.23/servo_pulse?ch=4&speed_angle=60&duration_ms=500"
    请降低阈值或勾选"黑线为高电平"。ADS1115 始终是 ±6.144V 量程，无 3.3V 截断。
 5. **循迹调参**：先 `Kd=0, Ki=0`，从小到大加 `Kp` 直到轻微摆动，再加 `Kd` 抑制；
    底盘响应不够时提高加速度（默认 3000 步/秒²）。
-6. **发热**：不运动时关闭两路 EN，DRV8825 会释放力矩。
+6. **工位横线检测**：先用网页观察 8 路黑白判定，确认整条横线能让至少
+   `sblack` 路（默认 6）同时变黑，且左右半区都有黑探头；再调 `sconfirm`、
+   `srearm`、`sinterval`，避免普通弯道误触发。
+7. **视觉对位**：先让 K230 屏幕显示稳定颜色与坐标，再调基准 `mcx/mcy`、`rcx/rcy`；
+   `align_nudge_mm` 不要小于 1mm（否则四舍五入成 0 步直接判失败），
+   `xsign/ysign` 用于修正装车方向。
+8. **比赛前**：确认 K230 `DEBUG_UART_LOG=False`、两路 EN 打开、所有执行器静止、
+   Z 与盘位零点有效、标定已确认；启动后不要再用手机发手动指令。
+9. **发热**：不运动时关闭两路 EN，DRV8825 会释放力矩。
