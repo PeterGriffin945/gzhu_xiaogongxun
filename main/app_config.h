@@ -115,6 +115,10 @@ extern "C" {
 #define WIFI_PASS   "13532535322"
 #define WIFI_MAX_RETRY 0     /* 0 = 无限重连 */
 
+/* 兜底 AP：路由连不上时，手机可连这个热点访问 http://192.168.4.1/ */
+#define WIFI_AP_SSID  "mecanum-car"
+#define WIFI_AP_PASS  "mecanum123"
+
 #ifdef __cplusplus
 }
 #endif

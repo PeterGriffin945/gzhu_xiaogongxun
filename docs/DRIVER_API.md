@@ -856,9 +856,13 @@ const char *wifi_sta_ip(void);        // 未连接返回 "0.0.0.0"
 ```
 
 - `WIFI_PS_NONE`：关闭省电，保证 Web 轮询低延迟。
-- 断线每 2 s 重连一次，无限重试。
-- 目标热点在 `app_config.h`：`WIFI_SSID "哇哇哇哇哇"` / `WIFI_PASS "13532535322"`，
-  换场地时只改这两行；连接的是路由器（STA），不是自建 AP。
+- 断线每 2 s 重连一次，无限重试；断开原因按名称记录（`NO_AP_FOUND`、
+  `4WAY_HANDSHAKE_TIMEOUT` 等），连续失败 5 次自动扫描并打印周围 AP
+  （SSID / RSSI / 信道 / 加密方式）。
+- 目标路由器在 `app_config.h`：`WIFI_SSID "哇哇哇哇哇"` / `WIFI_PASS "13532535322"`。
+- **APSTA 兜底**：固件同时开启 AP `mecanum-car` / `mecanum123`，
+  即使路由器不可用，也可连该热点访问 `http://192.168.4.1/`。
+- Wi-Fi 初始化失败时 `main` 只打印错误、不重启，串口仍可查看原因。
 
 ### 4.14 `web_server.h` + HTTP API
 
@@ -1313,4 +1317,4 @@ ESP_ERROR_CHECK(competition_start());
 
 ---
 
-*最后更新：2026-11-15　固件 0xE79E0（948704 字节，约 927 KiB），ESP-IDF v6.1.0 编译 0 warning。*
+*最后更新：2026-11-15　固件 0xE93C0（955328 字节，约 933 KiB），ESP-IDF v6.1.0 编译 0 warning。*

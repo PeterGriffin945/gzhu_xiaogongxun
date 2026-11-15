@@ -88,8 +88,10 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(competition_init());
 
-    /* Wi-Fi 与 Web 控制台 */
-    ESP_ERROR_CHECK(wifi_sta_init());
+    /* Wi-Fi 与 Web 控制台：Wi-Fi 初始化失败不要重启，保留串口日志便于定位 */
+    if (wifi_sta_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi init failed; serial console remains available");
+    }
     ESP_ERROR_CHECK(web_server_start());
 
     ESP_LOGI(TAG, "system ready, connect to Wi-Fi \"%s\" and open the IP above",

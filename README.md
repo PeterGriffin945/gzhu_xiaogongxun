@@ -3,7 +3,7 @@
 基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xE79E0（948704 字节，约 927 KiB），2MB Flash 的 1500K app 分区剩余 38%。
+> 固件 0xE93C0（955328 字节，约 933 KiB），2MB Flash 的 1500K app 分区剩余 38%。
 
 ---
 
@@ -39,7 +39,7 @@ helloworld/
     ├── manipulator.h / .c      # 升降 + 底座 + 夹爪动作脚本
     ├── competition.h / .c      # 自动比赛状态机、标定与安全约束
     ├── settings.h / .c         # 调参参数 NVS 持久化（PID/阈值/速度/舵机校准）
-    ├── wifi_sta.h / .c         # Wi-Fi STA + 断线重连 + 关闭省电
+    ├── wifi_sta.h / .c         # Wi-Fi STA + 断线重连 + AP 兜底热点 + 断开原因日志
     ├── web_server.h / .c       # HTTP API
     └── web_page.h              # 内嵌单页 HTML/JS 控制台（含比赛卡片）
 ```
@@ -339,11 +339,16 @@ idf.py -p COM18 flash monitor
 1. 上电后串口会打印 Wi-Fi 连接过程与 IP，例如：
    `I (xxxx) wifi: connected! open http://192.168.1.23/`
 2. 手机/电脑连同一个路由器，浏览器打开该 IP。
-3. 页面每 **50ms** 轮询 `/api/status`，实时显示：
+3. **连接失败时**：串口会打印断开原因（如 `NO_AP_FOUND`、`4WAY_HANDSHAKE_TIMEOUT`），
+   连续失败 5 次会自动扫描并列出周围 2.4GHz AP（SSID/RSSI/信道），便于判断是
+   SSID 写错、路由器只开 5GHz 还是信号太弱。
+4. **兜底热点**：固件始终开启 AP `mecanum-car`（密码 `mecanum123`）。
+   即使路由器连不上，也可以手机直连该热点，打开 **http://192.168.4.1/** 调试。
+5. 页面每 **50ms** 轮询 `/api/status`，实时显示：
    - 8 路电压条、阈值线、黑白判定
    - 底盘/升降 EN 状态、四种轮速、采样序号、升降位置 `zpos`
    - 舵机当前角度、Wi-Fi 状态
-4. 比赛卡片每 **200ms** 轮询 `/api/competition`，显示状态机、已装/已放、
+6. 比赛卡片每 **200ms** 轮询 `/api/competition`，显示状态机、已装/已放、
    Z 与盘位零点有效性、K230 在线/模式、视觉坐标与置信度。
 
 操作说明：
