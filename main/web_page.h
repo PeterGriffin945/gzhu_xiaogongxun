@@ -300,17 +300,22 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
 
   <section class="card">
     <h2>循迹 PID 调参 <span>实时生效</span></h2>
-    <div class="slider"><div class="top"><span>Kp 比例</span><b id="kpv">0.90</b></div>
-      <input type="range" id="kp" min="0" max="5" step="0.05" value="0.9"></div>
+    <div class="row" style="margin:-2px 0 8px">
+      <span class="badge" id="pidLine">循迹 --</span>
+      <span class="mono">err <b id="pidErr" style="color:var(--acc)">0.00</b></span>
+      <span class="mono">ω <b id="pidW" style="color:var(--acc)">0.00</b></span>
+    </div>
+    <div class="slider"><div class="top"><span>Kp 比例</span><b id="kpv">0.60</b></div>
+      <input type="range" id="kp" min="0" max="5" step="0.05" value="0.6"></div>
     <div class="slider"><div class="top"><span>Ki 积分</span><b id="kiv">0.00</b></div>
       <input type="range" id="ki" min="0" max="2" step="0.01" value="0"></div>
-    <div class="slider"><div class="top"><span>Kd 微分</span><b id="kdv">0.00</b></div>
-      <input type="range" id="kd" min="0" max="1" step="0.01" value="0"></div>
-    <div class="slider"><div class="top"><span>修正常数上限 ω</span><b id="omv">3.0 rad/s</b></div>
-      <input type="range" id="om" min="0" max="8" step="0.1" value="3"></div>
-    <div class="slider"><div class="top"><span>加速度（5 轴共用）</span><b id="accv">3000 步/秒²</b></div>
-      <input type="range" id="acc" min="500" max="20000" step="100" value="3000"></div>
-    <div class="hint">误差范围 ±3.5（探头间距）。Kp 过大会左右摆动，可先加 Kd 抑制；Ki 一般保持 0。循迹基础速度在"运动控制"里的底盘航速。</div>
+    <div class="slider"><div class="top"><span>Kd 微分</span><b id="kdv">0.15</b></div>
+      <input type="range" id="kd" min="0" max="1" step="0.01" value="0.15"></div>
+    <div class="slider"><div class="top"><span>修正角速度上限 ω</span><b id="omv">1.5 rad/s</b></div>
+      <input type="range" id="om" min="0" max="5" step="0.1" value="1.5"></div>
+    <div class="slider"><div class="top"><span>加速度（5 轴共用）</span><b id="accv">1200 步/秒²</b></div>
+      <input type="range" id="acc" min="500" max="20000" step="100" value="1200"></div>
+    <div class="hint">误差范围 ±3.5（探头间距）。转向角速度有 6 rad/s² 的斜率限制，避免猛打方向过冲。先调 Kp 到轻微摆动，再加 Kd 抑制；Ki 一般保持 0。循迹基础速度在"运动控制"里的底盘航速。</div>
   </section>
 
 </main>
@@ -535,24 +540,51 @@ inv.onchange = () => api(`/api/line?inv=${inv.checked ? 1 : 0}`);
 rev.onchange = () => api(`/api/line?rev=${rev.checked ? 1 : 0}`);
 
 /* ---- PID ---- */
-const pidMap = [["kp","kpv",2],["ki","kiv",2],["kd","kdv",2],["om","omv",1],["acc","accv",0]];
-pidMap.forEach(([id, lab, dec]) => {
+const pidMap = [
+  ["kp", "kpv", 2, ""],
+  ["ki", "kiv", 2, ""],
+  ["kd", "kdv", 2, ""],
+  ["om", "omv", 1, " rad/s"],
+  ["acc", "accv", 0, " 步/秒²"]
+];
+const pidPending = {};
+let pidTimer = null;
+
+function sendPidNow() {
+  clearTimeout(pidTimer);
+  const v = {
+    kp: +$("kp").value, ki: +$("ki").value, kd: +$("kd").value,
+    om: +$("om").value, acc: +$("acc").value
+  };
+  api(`/api/line?kp=${v.kp}&ki=${v.ki}&kd=${v.kd}&om=${v.om}&accel=${v.acc}`);
+  /* 记录本次下发的值，防止 50ms 轮询用旧值把滑块弹回去后再把旧值发出去 */
+  const until = performance.now() + 1500;
+  for (const k of Object.keys(v)) pidPending[k] = { v: v[k], until };
+}
+function sendPidSoon() {
+  clearTimeout(pidTimer);
+  pidTimer = setTimeout(sendPidNow, 80);
+}
+function applyPidValue(id, lab, dec, unit, value) {
+  if (S.dragging === id) return;
+  const p = pidPending[id];
+  if (p && performance.now() < p.until && Math.abs(p.v - value) > 1e-4) {
+    return;   /* 服务端还没回显，保留本地值 */
+  }
+  delete pidPending[id];
+  $(id).value = value;
+  $(lab).textContent = Number(value).toFixed(dec) + unit;
+}
+
+pidMap.forEach(([id, lab, dec, unit]) => {
   const el = $(id);
   el.addEventListener("pointerdown", () => { S.dragging = id; });
   el.addEventListener("input", () => {
-    const unit = id === "om" ? " rad/s" : id === "acc" ? " 步/秒²" : "";
     $(lab).textContent = Number(el.value).toFixed(dec) + unit;
+    sendPidSoon();       /* 拖动过程中就生效 */
   });
-  el.addEventListener("change", () => { S.dragging = null; sendPid(); });
+  el.addEventListener("change", () => { S.dragging = null; sendPidNow(); });
 });
-let pidTimer = null;
-function sendPid() {
-  clearTimeout(pidTimer);
-  pidTimer = setTimeout(() => {
-    api(`/api/line?kp=${$("kp").value}&ki=${$("ki").value}&kd=${$("kd").value}` +
-        `&om=${$("om").value}&accel=${$("acc").value}`);
-  }, 80);
-}
 
 /* ---- 渲染 ---- */
 const names = ["RR","RF","LF","LR"];
@@ -609,11 +641,16 @@ function render(j) {
   if (S.dragging !== "cs") applySpeedValue("cs", "csv", j.cs);
   if (S.dragging !== "ls") applySpeedValue("ls", "lsv", j.lsp);
 
-  if (S.dragging !== "kp") { $("kp").value = j.kp; $("kpv").textContent = j.kp.toFixed(2); }
-  if (S.dragging !== "ki") { $("ki").value = j.ki; $("kiv").textContent = j.ki.toFixed(2); }
-  if (S.dragging !== "kd") { $("kd").value = j.kd; $("kdv").textContent = j.kd.toFixed(2); }
-  if (S.dragging !== "om") { $("om").value = j.om; $("omv").textContent = j.om.toFixed(1) + " rad/s"; }
-  if (S.dragging !== "acc") { $("acc").value = j.acc; $("accv").textContent = j.acc.toFixed(0) + " 步/秒²"; }
+  applyPidValue("kp", "kpv", 2, "", j.kp);
+  applyPidValue("ki", "kiv", 2, "", j.ki);
+  applyPidValue("kd", "kdv", 2, "", j.kd);
+  applyPidValue("om", "omv", 1, " rad/s", j.om);
+  applyPidValue("acc", "accv", 0, " 步/秒²", j.acc);
+
+  $("pidErr").textContent = Number(j.err).toFixed(2);
+  $("pidW").textContent = Number(j.w).toFixed(2);
+  $("pidLine").textContent = j.mode === 1 ? (j.ls ? "在线" : "未检测到线") : "未启用";
+  $("pidLine").className = "badge " + (j.mode === 1 ? (j.ls ? "ok" : "bad") : "");
 
   if (S.dragging !== "s0") { $("s0").value = j.srv[0]; $("a0").textContent = j.srv[0] + "°"; }
   if (S.dragging !== "s4") { $("s4").value = j.srv[1]; $("a4").textContent = j.srv[1] + "°"; }

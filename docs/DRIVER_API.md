@@ -313,15 +313,16 @@ esp_err_t lu9685_set_target_angle(uint8_t channel, uint8_t angle);  // 仅声明
 
 ```c
 typedef struct {
-    float kp;            // 默认 0.90
+    float kp;            // 默认 0.60
     float ki;            // 默认 0.00
-    float kd;            // 默认 0.00
+    float kd;            // 默认 0.15
     float threshold;     // 黑白阈值 V，默认 4.00；后端限幅 0.0~5.0
                          // 网页滑块仅开放 4.00~5.00（步进 0.01）用于精细标定
     bool  black_high;    // true = 电压高于阈值为黑线（极性反转）
     bool  reverse;       // true = 探头实际安装为 8→1，位置权重取反
     float base_speed;    // 旧字段 m/s；底盘已改用 chassis_base_speed
-    float max_omega;     // 修正角速度上限 rad/s，默认 3.0
+    float max_omega;     // 修正角速度上限 rad/s，默认 1.5
+                         // 输出还受 6 rad/s² 的转向斜率限制，防止过冲
 } line_params_t;
 
 void  line_follow_init(void);
@@ -903,7 +904,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
   "mode":0, "vx":0.00, "vy":0.45, "w":0.00,
   "en":[1,0],
   "th":4.00, "inv":0, "rev":0,
-  "kp":0.90, "ki":0.00, "kd":0.00, "base":0.30, "om":3.0, "acc":1200,
+  "kp":0.60, "ki":0.00, "kd":0.15, "base":0.30, "om":1.5, "acc":1200,
   "cs":300, "lsp":300,
   "v":[0.12,0.13,0.11,0.12,0.14,0.12,0.13,0.12],
   "b":[1,1,1,1,1,1,1,1],
@@ -1286,4 +1287,4 @@ ESP_ERROR_CHECK(competition_start());
 
 ---
 
-*最后更新：2026-11-15　固件 0xE6CD0（945360 字节，约 923 KiB），ESP-IDF v6.1.0 编译 0 warning。*
+*最后更新：2026-11-15　固件 0xE7190（946576 字节，约 924 KiB），ESP-IDF v6.1.0 编译 0 warning。*

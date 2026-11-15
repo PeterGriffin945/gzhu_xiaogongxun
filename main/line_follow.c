@@ -14,6 +14,8 @@
 
 #define WEIGHT_DEADBAND   0.05f
 #define LOST_WEIGHT_SUM   0.10f
+/* 转向角速度变化率上限（rad/s²）：防止 PID 瞬间打满方向导致过冲丢线 */
+#define OMEGA_SLEW_RATE   6.0f
 
 static const float s_position[LINE_SENSOR_COUNT] = {
     -3.5f, -2.5f, -1.5f, -0.5f, 0.5f, 1.5f, 2.5f, 3.5f
@@ -30,14 +32,14 @@ static int64_t s_lost_since_us;
 
 void line_follow_init(void)
 {
-    s_params.kp = 0.90f;
+    s_params.kp = 0.60f;
     s_params.ki = 0.00f;
-    s_params.kd = 0.00f;
+    s_params.kd = 0.15f;
     s_params.threshold = 4.00f;      /* 0 ~ 5.0V 全量程可调 */
     s_params.black_high = false;     /* 默认：黑线电压 < 阈值 */
     s_params.reverse = false;
     s_params.base_speed = 0.30f;
-    s_params.max_omega = 3.0f;
+    s_params.max_omega = 1.5f;
     line_follow_reset();
 }
 
@@ -187,7 +189,17 @@ float line_follow_update(const float v[8], float dt, bool *line_seen, float *err
     }
 
     /* 黑线偏右 (error>0) → 需要顺时针 → ω 为负 */
-    s_last_omega = -out;
+    float target = -out;
+
+    /* 转向斜率限制：即使 Kp 很大，ω 也只能在 OMEGA_SLEW_RATE 内变化，
+       避免“一看到线就猛打方向”造成过冲、来回摆甚至丢线。 */
+    float max_delta = OMEGA_SLEW_RATE * dt;
+    if (target > s_last_omega + max_delta) {
+        target = s_last_omega + max_delta;
+    } else if (target < s_last_omega - max_delta) {
+        target = s_last_omega - max_delta;
+    }
+    s_last_omega = target;
     return s_last_omega;
 }
 
