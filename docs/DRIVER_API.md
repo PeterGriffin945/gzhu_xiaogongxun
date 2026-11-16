@@ -26,13 +26,18 @@
 | 不用 Web，纯 C 控制 | 只依赖 `chassis.h` / `mecanum.h` / `stepper.h` |
 
 **硬约束**：不要在 ISR 里调用任何 I2C / UART / FreeRTOS 阻塞函数；步进轴速度上限
-8000 步/秒；EN 低电平为锁轴；自动比赛期间手动执行器接口会被 HTTP 层拒绝（409）。
+**10000 微步/秒**（1/16 细分，脉冲率硬上限 10 kHz）；EN 低电平为锁轴；自动比赛期间
+手动执行器接口会被 HTTP 层拒绝（409）。
 
 ---
 
 ## 1. 硬件拓扑（与 `main/app_config.h` 一致，改硬件只改该文件）
 
-### 1.1 步进电机 5 × DRV8825（整步）
+### 1.1 步进电机 5 × DRV8825（1/16 细分）
+
+> **单位约定**：DRV8825 的 MS1/MS2/MS3 跳线已设为 1/16 细分（纯硬件，不占 GPIO）。
+> 本文所有“步/秒、步数、加速度”均为**微步**单位，是整步数值的 16 倍。
+> `app_config.h` 中 `WHEEL_MICROSTEP` / `LIFT_MICROSTEP` 控制缩放；改回整步设为 1 即可。
 
 | 轴枚举 | 位置 | STEP | DIR | DIR 逻辑默认 |
 |---|---|---|---|---|
@@ -69,10 +74,11 @@
 ### 1.4 机械参数（`app_config.h`，必须按实车改）
 
 ```c
-WHEEL_DIAMETER_MM    65.0f    // 轮径
-WHEEL_STEPS_PER_REV  200      // 整步 1.8°
-WHEELBASE_MM         160.0f   // 轴距
-TRACK_MM             190.0f   // 轮距
+WHEEL_DIAMETER_MM    65.0f                          // 轮径
+WHEEL_MICROSTEP      16                             // DRV8825 细分
+WHEEL_STEPS_PER_REV  (200 * WHEEL_MICROSTEP)        // 3200 微步/圈
+WHEELBASE_MM         160.0f                         // 轴距
+TRACK_MM             190.0f                         // 轮距
 ```
 
 ### 1.5 K230 视觉串口
@@ -155,7 +161,7 @@ void  stepper_set_chassis_speeds(const float steps_per_sec[4]);   // 顺序 RR/R
 float stepper_get_speed(stepper_axis_t axis);                     // 当前实际速度（含斜坡）
 float stepper_get_target(stepper_axis_t axis);
 
-void  stepper_set_accel(float steps_per_sec2);                    // 默认 1200，范围 100~100000
+void  stepper_set_accel(float steps_per_sec2);                    // 默认 19200 微步/秒²，范围 1600~100000
 // 加减速为 S 形：接近 0 或目标速度时自动降低加速度（accel_scale 钟形系数）
 float stepper_get_accel(void);
 
@@ -182,11 +188,12 @@ void  stepper_abort_all(void);
 
 行为约定：
 
-- 单位 **步/秒**，正负表示方向；内部限幅 ±`STEPPER_MAX_SPEED`(8000)。
-- 连续调速：目标从 0 变非 0 时，**直接跳到 200 步/秒**跨过低速共振区，再按加速度爬升。
+- 单位 **微步/秒**，正负表示方向；内部限幅 ±`STEPPER_MAX_SPEED`(10000)。
+- 连续调速：目标从 0 变非 0 时，**直接跳到 960 微步/秒**（升降轴同理）
+  跨过低速区，再按加速度爬升。
   **换向必须先减速到 0**，下一拍才切换 DIR；调用方无需处理。
-- `stepper_start_move()`：`delta_steps` 的符号决定方向、绝对值是脉冲数；`peak_sps` 必须
-  为正，内部限幅到 8000。返回：
+- `stepper_start_move()`：`delta_steps` 的符号决定方向、绝对值是微步数；`peak_sps` 必须
+  为正，内部限幅到 10000。返回：
   - `ESP_ERR_INVALID_ARG`：`delta_steps == 0`、`peak_sps` 非有限或 ≤0；
   - `ESP_ERR_INVALID_STATE`：该轴已在定步、当前速度 >1 步/秒，或对应 EN 未使能；
   - `ESP_OK`：立即返回，运动在 ISR + 1kHz 斜坡中完成。
@@ -210,9 +217,9 @@ typedef struct { float vx; float vy; float omega; } chassis_vel_t;
 // vx>0 右移 (m/s), vy>0 前进 (m/s), omega>0 逆时针 (rad/s, 俯视)
 
 void    mecanum_inverse(const chassis_vel_t *cmd, float wheel_mps[4]); // RR/RF/LF/LR
-int32_t mecanum_mps_to_steps(float mps);     // 已限幅 ±8000 并四舍五入
+int32_t mecanum_mps_to_steps(float mps);     // 已限幅 ±10000 并四舍五入
 float   mecanum_steps_to_mps(int32_t steps);
-float   mecanum_max_wheel_mps(void);         // ≈ 8.17 m/s（当前轮径）
+float   mecanum_max_wheel_mps(void);         // ≈ 0.64 m/s（16 细分 + 10kHz 上限）
 ```
 
 公式（`k = (轴距 + 轮距) / 2`）：
@@ -222,7 +229,8 @@ RR = vy + vx + k·ω      RF = vy - vx + k·ω
 LF = vy + vx - k·ω      LR = vy - vx - k·ω
 ```
 
-步频换算：`steps = mps × 200 / (π · 0.065)` ≈ `mps × 979.4`。
+步频换算（1/16 细分）：`steps = mps × 3200 / (π · 0.065)` ≈ `mps × 15670`；
+即 1 微步 ≈ 0.064 mm，1 mm ≈ 15.7 微步。
 
 ### 4.3 `i2c_bus.h` —— 总线与 TCA9548A
 
@@ -382,7 +390,7 @@ esp_err_t chassis_start_translation(float dx_mm, float dy_mm, float peak_sps);
 bool      chassis_translation_active(void);
 bool      chassis_translation_done(void);
 
-void chassis_set_speeds(float chassis_sps, float lift_sps);  // 100~1500 / 100~1200
+void chassis_set_speeds(float chassis_sps, float lift_sps);  // 1600~10000 / 1600~10000 微步/秒
 void chassis_get_speeds(float *chassis_sps, float *lift_sps);
 void chassis_stop(void);
 void chassis_get_status(chassis_status_t *out);
@@ -390,7 +398,7 @@ void chassis_get_status(chassis_status_t *out);
 
 **`chassis_set_velocity` 的重要语义（当前版本）**：
 `vx / vy / omega` 只决定**方向与各轮比例**，四轮步频的峰值会被归一化到
-`chassis_base_speed`（`chassis_set_speeds` 的第一个参数，默认 300 步/秒）。
+`chassis_base_speed`（`chassis_set_speeds` 的第一个参数，默认 4800 微步/秒）。
 因此 `(0, 0.45, 0)` 与 `(0, 1, 0)` 都是“全速前进”，`(0, 0, 0)` 才是停车。
 如果希望按 m/s 精确控制，请直接调用 `mecanum_*` + `stepper_set_chassis_speeds()`。
 
@@ -609,7 +617,7 @@ typedef struct {
     int32_t z_ground_pick;      // 地面抓取 Z，步；0..z_max
     int32_t z_tray;             // 盘内取放 Z，步；0..z_max
     int32_t z_ground_place;     // 靶环放置 Z，步；0..z_max
-    int32_t z_max;              // Z 最大软限位，步；100..100000
+    int32_t z_max;              // Z 最大软限位，微步；1600..1600000
     uint8_t base_stow;          // 底座运输角，0~180（逻辑角，按时间定位）
     uint8_t base_pick;          // 底座地面抓取角，0~180
     uint8_t base_tray;          // 底座盘位角，0~180
@@ -620,7 +628,7 @@ typedef struct {
     uint16_t base_sweep_ms;     // CH0 逻辑 0~180° 行程时间 200~10000ms
     uint16_t base_settle_ms;    // 底座到位稳定，0~5000ms
     uint16_t gripper_settle_ms; // 夹爪到位稳定，0~5000ms
-    float lift_speed_sps;       // Z 定步峰值速度，100~1200 步/秒
+    float lift_speed_sps;       // Z 定步峰值速度，1600~10000 微步/秒
 } manipulator_config_t;
 
 void      manipulator_init(void);
@@ -742,11 +750,11 @@ const char *competition_error_name(competition_error_t error);
 
 | 字段 | 单位 | 默认值 | 合法范围 / 说明 |
 |---|---|---|---|
-| `manipulator.z_transport` | 步 | 0 | **必须为 0**（运输位即零点） |
-| `manipulator.z_ground_pick` | 步 | 6000 | 0 … `z_max` |
-| `manipulator.z_tray` | 步 | 2500 | 0 … `z_max` |
-| `manipulator.z_ground_place` | 步 | 6000 | 0 … `z_max` |
-| `manipulator.z_max` | 步 | 10000 | 100 … 100000 |
+| `manipulator.z_transport` | 微步 | 0 | **必须为 0**（运输位即零点） |
+| `manipulator.z_ground_pick` | 微步 | 96000 | 0 … `z_max` |
+| `manipulator.z_tray` | 微步 | 40000 | 0 … `z_max` |
+| `manipulator.z_ground_place` | 微步 | 96000 | 0 … `z_max` |
+| `manipulator.z_max` | 微步 | 160000 | 1600 … 1600000 |
 | `manipulator.base_stow` | 逻辑° | 90 | 0 … 180 |
 | `manipulator.base_pick` | 逻辑° | 0 | 0 … 180 |
 | `manipulator.base_tray` | 逻辑° | 180 | 0 … 180 |
@@ -885,7 +893,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/api/servo` | `ch` `a` | 角度 0~180（按当前协议下发） |
 | `/thresh` | `th`（或 `v`） | 阈值 0.0~5.0 V |
 | `/api/line` | `th` `inv` `rev` `kp` `ki` `kd` `om` `accel`（`base` 兼容） | 循迹参数 |
-| `/speed`（别名 `/api/speed`） | `chassis` `lift` | 100~1500 / 100~1200 步/秒 |
+| `/speed`（别名 `/api/speed`） | `chassis` `lift` | 1600~10000 微步/秒 |
 | `/servo_proto` | `mode=0\|1\|2` | 切换协议并重发三路角度 |
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动 |
 | `/servo_center` | `ch` `a` | 校准中位停止值 |
@@ -954,9 +962,9 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
   "link":{"online":0,"mode":0,"ack":0,"frames":0},
   "vision":{"mode":0,"color":0,"detected":0,"stable":0,
             "cx":0,"cy":0,"area":0,"conf":0,"age":-1},
-  "cfg":{"zpick":6000,"ztray":2500,"zplace":6000,"zmax":10000,
+  "cfg":{"zpick":96000,"ztray":40000,"zplace":96000,"zmax":160000,
          "bstow":90,"bpick":0,"btray":180,"bplace":0,"gopen":30,"gclose":80,
-         "bms":450,"gms":300,"bspeed":60,"bsweep":2400,"lsps":300.0,
+         "bms":450,"gms":300,"bspeed":60,"bsweep":2400,"lsps":6400.0,
          "mcx":160,"mcy":120,"rcx":160,"rcy":120,
          "tol":8,"minconf":10,"maxiter":5,"xsign":1,"ysign":1,"nudge":3.00,"asps":200.0,
          "tspeed":60,"tms":500,"sblack":6,"sconfirm":2,"sclear":3,"srearm":3,"sinterval":800}
@@ -1191,8 +1199,8 @@ lu9685_pulse_start(LU9685_CH_TRAY, 60, 500, -1);         // 360° 舵机正转 0
 
 ```c
 stepper_set_lift_enable(true);
-chassis_set_lift_limits(0, 10000);          // 自动比赛会按 z_max 自动安装
-chassis_lift_move_to(2500, 400.0f);         // 走到 2500 步
+chassis_set_lift_limits(0, 160000);         // 自动比赛会按 z_max 自动安装
+chassis_lift_move_to(40000, 6400.0f);       // 走到 40000 微步
 while (chassis_lift_move_active()) {
     vTaskDelay(pdMS_TO_TICKS(20));
 }
@@ -1248,10 +1256,10 @@ ESP_ERROR_CHECK(competition_start());
    判定为不满足条件。
 4. **丢线不会停车/中止**：循迹阶段看不到线时保持上次转向继续走；若车辆因此跑偏，
    属于标定或赛道问题，可用网页 `ls` 观察是否长时间为 0。
-5. **`align_nudge_mm` 必须 ≥1mm**：1 步约 1.02mm，小于 1mm 的修正会被四舍五入成
-   0 步并直接判失败；合法范围 1.0~50.0mm。
-6. **`lift_speed_sps` 必须 ≥100，但过低速度可能触发超时**：合法范围 100~1200；
-   100 步/秒走 6000 步约需 60 秒，取放脚本含多次升降，极端低速可能超过 180 秒动作超时。
+5. **`align_nudge_mm` 必须 ≥1mm**：1 微步约 0.064mm，1mm≈15.7 微步；更小的修正会
+   被四舍五入成 0 步并直接判失败；合法范围 1.0~50.0mm。
+6. **`lift_speed_sps` 必须 ≥1600，但过低速度可能触发超时**：合法范围 1600~10000；
+   1600 微步/秒走 96000 微步约需 60 秒，取放脚本含多次升降，极端低速可能超过 180 秒动作超时。
 7. **中止会作废两个零点**：`competition_abort()` / `/api/stop` 会把
    `z_zero_valid` 与 `tray.zero_valid` 都清零；必须重新设 Z 零点和盘位零点。
 8. **初始化顺序**：`stepper_init()` 必须最先，否则 EN 可能在上电瞬间保持低电平使电机发热。
@@ -1261,7 +1269,8 @@ ESP_ERROR_CHECK(competition_start());
 11. **看门狗**：HTTP 松键后前端会发 0；自写客户端必须每 <400ms 刷新移动指令。
 12. **EN 关闭**：会把目标速度清 0 并取消定步，重新使能后需要重新下发速度指令。
 13. **方向反了**：优先调 `stepper_set_dir_invert(axis, true)`，不要改接线或公式。
-14. **步频上限**：单轴 8000 步/秒；底盘航速上限 1500，留足加速余量。
+14. **步频上限**：单轴 10000 微步/秒（1/16 细分，脉冲率 10kHz 硬上限，约 0.64 m/s）；
+    底盘航速上限同为 10000，留足加速余量。
 15. **左前/左后 DIR 默认取反**：这是对置安装的机械补偿，若整车前进方向反了，
     应同时翻转四个轮子，而不是单独翻转一侧。
 16. **K230 调试文本**：`DEBUG_UART_LOG` 必须保持 `False`，否则文本会污染协议帧。

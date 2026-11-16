@@ -55,10 +55,11 @@ static void default_config(competition_config_t *config)
     *config = (competition_config_t) {
         .manipulator = {
             .z_transport = 0,
-            .z_ground_pick = 6000,
-            .z_tray = 2500,
-            .z_ground_place = 6000,
-            .z_max = 10000,
+            /* Z 位置按微步计：整步标定值 × 细分倍数 */
+            .z_ground_pick = 6000 * LIFT_MICROSTEP,
+            .z_tray = 2500 * LIFT_MICROSTEP,
+            .z_ground_place = 6000 * LIFT_MICROSTEP,
+            .z_max = 10000 * LIFT_MICROSTEP,
             .base_stow = 90,
             .base_pick = 0,
             .base_tray = 180,
@@ -69,7 +70,7 @@ static void default_config(competition_config_t *config)
             .base_sweep_ms = ARM_BASE_SWEEP_MS_DEFAULT,
             .base_settle_ms = 450,
             .gripper_settle_ms = 300,
-            .lift_speed_sps = 400.0f,
+            .lift_speed_sps = LIFT_SPEED_DEFAULT,
         },
         .material_target_cx = 160,
         .material_target_cy = 120,
@@ -81,7 +82,7 @@ static void default_config(competition_config_t *config)
         .vision_x_sign = 1,
         .vision_y_sign = 1,
         .align_nudge_mm = 3.0f,
-        .align_speed_sps = 200.0f,
+        .align_speed_sps = 200.0f * WHEEL_MICROSTEP,
         .tray_speed_angle = 60,
         .tray_index_ms = 500,
     };
@@ -93,7 +94,8 @@ static void default_config(competition_config_t *config)
 static bool valid_config(const competition_config_t *config)
 {
     const manipulator_config_t *m = &config->manipulator;
-    if (m->z_transport != 0 || m->z_max < 100 || m->z_max > 100000 ||
+    if (m->z_transport != 0 ||
+        m->z_max < 100 * LIFT_MICROSTEP || m->z_max > 100000 * LIFT_MICROSTEP ||
         m->z_ground_pick < 0 || m->z_ground_pick > m->z_max ||
         m->z_tray < 0 || m->z_tray > m->z_max ||
         m->z_ground_place < 0 || m->z_ground_place > m->z_max ||
@@ -103,7 +105,7 @@ static bool valid_config(const competition_config_t *config)
         m->base_speed_angle < 10 || m->base_speed_angle > 170 ||
         m->base_sweep_ms < 200 || m->base_sweep_ms > 10000 ||
         m->gripper_settle_ms > 5000 || !isfinite(m->lift_speed_sps) ||
-        m->lift_speed_sps < 100.0f || m->lift_speed_sps > 1200.0f) {
+        m->lift_speed_sps < LIFT_SPEED_MIN || m->lift_speed_sps > LIFT_SPEED_MAX) {
         return false;
     }
     if (config->material_target_cx >= 320 || config->ring_target_cx >= 320 ||
@@ -116,7 +118,8 @@ static bool valid_config(const competition_config_t *config)
         !isfinite(config->align_nudge_mm) || !isfinite(config->align_speed_sps) ||
         /* 1 步 ≈ 1.02mm；小于 1mm 的微调会被四舍五入成 0 步并直接判失败 */
         config->align_nudge_mm < 1.0f || config->align_nudge_mm > 50.0f ||
-        config->align_speed_sps < 50.0f || config->align_speed_sps > 1000.0f ||
+        config->align_speed_sps < 50.0f * WHEEL_MICROSTEP ||
+        config->align_speed_sps > STEPPER_MAX_SPEED ||
         config->tray_speed_angle == 0 || config->tray_speed_angle >= 90 ||
         config->tray_index_ms < 20 || config->tray_index_ms > 10000) {
         return false;

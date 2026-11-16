@@ -17,8 +17,6 @@
 
 #include "app_config.h"
 
-#define POSITION_START_SPEED 40.0f
-
 static const char *TAG = "stepper";
 
 typedef struct {
@@ -246,7 +244,9 @@ static void stepper_ramp_task(void *arg)
                         cur = approach_speed(cur, 0.0f, acc_step);
                     } else if (cur == 0.0f) {
                         set_direction = true;
-                        cur = direction * fminf(desired_mag, POSITION_START_SPEED);
+                        float start_limit = (i == AXIS_LIFT) ? POSITION_START_SPEED_LIFT
+                                                             : POSITION_START_SPEED;
+                        cur = direction * fminf(desired_mag, start_limit);
                     } else {
                         cur = approach_speed_smooth(cur, desired, acc_step);
                     }
@@ -283,7 +283,9 @@ static void stepper_ramp_task(void *arg)
             if (tgt == 0.0f) {
                 cur = approach_speed(cur, 0.0f, acc_step);
             } else if (cur == 0.0f) {
-                float start = fminf(fabsf(tgt), STEPPER_START_SPEED);
+                float start_limit = (i == AXIS_LIFT) ? STEPPER_START_SPEED_LIFT
+                                                     : STEPPER_START_SPEED;
+                float start = fminf(fabsf(tgt), start_limit);
                 set_direction = true;
                 cur = copysignf(start, tgt);
             } else if ((cur > 0.0f) != (tgt > 0.0f)) {

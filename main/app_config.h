@@ -62,23 +62,43 @@ extern "C" {
 #define K230_RESULT_TIMEOUT_MS 400
 
 /* ==========================================================================
- * 三、步进脉冲发生器 (DDS) 参数
+ * 三、步进细分与脉冲发生器 (DDS) 参数
+ *
+ * DRV8825 已通过 MS1/MS2/MS3 跳线配置为 1/16 细分（纯硬件，不占 GPIO）。
+ * 注意：所有“步/秒、步数、加速度”从此都按【微步】计，数值是整步的 16 倍。
+ * 以后改回整步只需把 MICROSTEP 改为 1，下面的派生值会自动缩放。
  * ========================================================================== */
+#define WHEEL_MICROSTEP         16          /* M1~M4 底盘轮：DRV8825 1/16 */
+#define LIFT_MICROSTEP          16          /* M5 升降：同样 1/16；整步则改 1 */
+
 #define STEPPER_TICK_HZ         20000       /* 50us 硬件定时器 */
 #define STEPPER_TICK_US         50
-#define STEPPER_START_SPEED     60.0f       /* 起步速度：越低越柔和，但过低会共振 */
-#define STEPPER_DEFAULT_ACCEL   1200.0f     /* 默认加速度：步/秒²（越低越平顺） */
-#define STEPPER_MAX_SPEED       8000.0f     /* 单轴限速：步/秒 */
+/* ISR 每 tick 最多发一个脉冲，脉冲率硬上限 10kHz，故限速取 10000。 */
+#define STEPPER_MAX_SPEED       10000.0f    /* 单轴限速：微步/秒 */
 #define STEPPER_MAX_ACCEL       100000.0f
-#define STEPPER_MIN_ACCEL       100.0f
+#define STEPPER_MIN_ACCEL       (100.0f * WHEEL_MICROSTEP)   /* 1600 微步/秒² */
 #define STEPPER_RAMP_PERIOD_MS  1           /* 速度斜坡更新周期 */
+
+/* 起步速度：整步基准 60 步/秒（0.3 转/秒）→ 16 细分下 960 微步/秒。
+   细分后低速共振大幅减小，不再需要整步时代那种 1 转/秒的起步跳变。 */
+#define STEPPER_START_SPEED_BASE    60.0f
+#define STEPPER_START_SPEED         (STEPPER_START_SPEED_BASE * WHEEL_MICROSTEP)
+#define STEPPER_START_SPEED_LIFT    (STEPPER_START_SPEED_BASE * LIFT_MICROSTEP)
+
+/* 开环定步（Z 轴/平移）的起步速度：整步基准 40 步/秒 */
+#define POSITION_START_SPEED_BASE   40.0f
+#define POSITION_START_SPEED        (POSITION_START_SPEED_BASE * WHEEL_MICROSTEP)
+#define POSITION_START_SPEED_LIFT   (POSITION_START_SPEED_BASE * LIFT_MICROSTEP)
+
+/* 默认加速度：整步 1200 → 16 细分 19200 微步/秒²（物理加速度不变） */
+#define STEPPER_DEFAULT_ACCEL   (1200.0f * WHEEL_MICROSTEP)
 
 /* ==========================================================================
  * 四、机械参数 (麦轮逆运动学)
  *   轮径 / 轴距 / 轮距请按实车测量后修改
  * ========================================================================== */
 #define WHEEL_DIAMETER_MM       65.0f
-#define WHEEL_STEPS_PER_REV     200         /* 1.8° 步进电机整步 */
+#define WHEEL_STEPS_PER_REV     (200 * WHEEL_MICROSTEP)   /* 1.8° 电机 × 1/16 细分 = 3200 */
 #define WHEELBASE_MM            160.0f      /* 前后轴距 */
 #define TRACK_MM                190.0f      /* 左右轮距 */
 
@@ -87,14 +107,15 @@ extern "C" {
 #define MANUAL_CMD_TIMEOUT_MS   400         /* 遥控指令看门狗 */
 #define LIFT_JOG_TIMEOUT_MS     500         /* 升降点动看门狗 */
 
-/* 运行时可调的基础转速（单位：步/秒）
- * 手动遥控 / 循迹基础航速统一读取 chassis 值，升降轴读取 lift 值。 */
-#define CHASSIS_BASE_SPEED_DEFAULT  300.0f
-#define CHASSIS_BASE_SPEED_MIN      100.0f
-#define CHASSIS_BASE_SPEED_MAX      1500.0f
-#define LIFT_SPEED_DEFAULT          300.0f
-#define LIFT_SPEED_MIN              100.0f
-#define LIFT_SPEED_MAX              1200.0f
+/* 运行时可调的基础转速（单位：微步/秒，16 细分）
+ * 手动遥控 / 循迹基础航速统一读取 chassis 值，升降轴读取 lift 值。
+ * 整步时代的 300 / 400 步/秒 → 16 细分 4800 / 6400 微步/秒（物理速度不变）。 */
+#define CHASSIS_BASE_SPEED_DEFAULT  (300.0f * WHEEL_MICROSTEP)   /* 4800 */
+#define CHASSIS_BASE_SPEED_MIN      (100.0f * WHEEL_MICROSTEP)   /* 1600 */
+#define CHASSIS_BASE_SPEED_MAX      STEPPER_MAX_SPEED             /* 10000 硬上限 */
+#define LIFT_SPEED_DEFAULT          (400.0f * LIFT_MICROSTEP)    /* 6400 */
+#define LIFT_SPEED_MIN              (100.0f * LIFT_MICROSTEP)    /* 1600 */
+#define LIFT_SPEED_MAX              STEPPER_MAX_SPEED            /* 10000 */
 
 /* 底座 CH0 是 360° 连续旋转舵机：用“速度角 + 持续时间”控制转角。
  * 速度角 <90 正转、>90 反转；sweep 为逻辑 0~180° 行程所需时间。 */

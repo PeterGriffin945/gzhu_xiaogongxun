@@ -136,8 +136,8 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <input type="range" id="kd" min="0" max="1" step="0.01" value="0.15"></div>
       <div class="slider"><div class="top"><span>修正角速度上限 ω</span><b id="omv">1.5 rad/s</b></div>
         <input type="range" id="om" min="0" max="5" step="0.1" value="1.5"></div>
-      <div class="slider"><div class="top"><span>加速度（5 轴共用）</span><b id="accv">1200 步/秒²</b></div>
-        <input type="range" id="acc" min="500" max="20000" step="100" value="1200"></div>
+      <div class="slider"><div class="top"><span>加速度（5 轴共用，微步/秒²）</span><b id="accv">19200 步/秒²</b></div>
+        <input type="range" id="acc" min="1600" max="40000" step="400" value="19200"></div>
       <div class="btnrow" style="margin-top:6px">
         <button id="saveTune" class="primary">💾 立即保存到 Flash</button>
       </div>
@@ -170,12 +170,12 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <button data-vx="0" data-vy="0" data-w="-1.6">右旋 ↻</button>
     </div>
     <div class="slider" style="margin-top:12px">
-      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">300 步/秒</b></div>
-      <input type="range" id="cs" min="100" max="1500" step="10" value="300">
+      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">4800 步/秒</b></div>
+      <input type="range" id="cs" min="1600" max="10000" step="50" value="4800">
     </div>
     <div class="slider">
-      <div class="top"><span>升降速度 M5</span><b id="lsv">300 步/秒</b></div>
-      <input type="range" id="ls" min="100" max="1200" step="10" value="300">
+      <div class="top"><span>升降速度 M5</span><b id="lsv">6400 步/秒</b></div>
+      <input type="range" id="ls" min="1600" max="10000" step="50" value="6400">
     </div>
     <div class="switch" style="margin-top:2px"><span>底盘使能 (EN / GPIO42)</span>
       <input type="checkbox" id="enChassis"></div>

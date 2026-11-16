@@ -24,7 +24,8 @@
 #define SETTINGS_NAMESPACE "tuning"
 #define SETTINGS_KEY       "blob"
 #define SETTINGS_MAGIC     0x54554E45U   /* 'TUNE' */
-#define SETTINGS_VERSION   1
+/* v2：速度/加速度单位从整步改为 1/16 微步，旧值必须丢弃后按新默认重来 */
+#define SETTINGS_VERSION   2
 #define SETTINGS_DEBOUNCE_US (2 * 1000 * 1000)
 
 static const char *TAG = "settings";
@@ -175,6 +176,16 @@ static esp_err_t load_and_apply(void)
 
     if (err != ESP_OK) {
         return err;
+    }
+    if (length == sizeof(blob) && blob.magic == SETTINGS_MAGIC && blob.version == 1) {
+        /* v1 的速度/加速度是整步单位，直接沿用会慢 16 倍。
+           PID、阈值、极性、舵机校准与单位无关，保留；其余回落到新默认。 */
+        apply_blob(&blob);
+        stepper_set_accel(STEPPER_DEFAULT_ACCEL);
+        chassis_set_speeds(CHASSIS_BASE_SPEED_DEFAULT, LIFT_SPEED_DEFAULT);
+        ESP_LOGI(TAG, "migrated v1 tuning: PID kept, accel/speeds reset for 1/%d microstep",
+                 WHEEL_MICROSTEP);
+        return ESP_OK;
     }
     if (length != sizeof(blob) || blob.magic != SETTINGS_MAGIC ||
         blob.version != SETTINGS_VERSION) {
