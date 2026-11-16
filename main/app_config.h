@@ -109,10 +109,13 @@ extern "C" {
 
 /* 运行时可调的基础转速（单位：微步/秒，16 细分）
  * 手动遥控 / 循迹基础航速统一读取 chassis 值，升降轴读取 lift 值。
- * 整步时代的 300 / 400 步/秒 → 16 细分 4800 / 6400 微步/秒（物理速度不变）。 */
-#define CHASSIS_BASE_SPEED_DEFAULT  (300.0f * WHEEL_MICROSTEP)   /* 4800 */
-#define CHASSIS_BASE_SPEED_MIN      (100.0f * WHEEL_MICROSTEP)   /* 1600 */
-#define CHASSIS_BASE_SPEED_MAX      STEPPER_MAX_SPEED             /* 10000 硬上限 */
+ *
+ * 实车工作点主要在整步 150 步/秒以下（16 细分 = 2400 微步/秒）：
+ *   底盘默认 150 整步/秒，范围 50~300 整步/秒（800~4800 微步/秒）；
+ *   升降默认 400 整步/秒（6400 微步/秒），保证比赛取放动作不超过 6 分钟。 */
+#define CHASSIS_BASE_SPEED_DEFAULT  (150.0f * WHEEL_MICROSTEP)   /* 2400 */
+#define CHASSIS_BASE_SPEED_MIN      (50.0f * WHEEL_MICROSTEP)    /* 800 */
+#define CHASSIS_BASE_SPEED_MAX      (300.0f * WHEEL_MICROSTEP)   /* 4800 */
 #define LIFT_SPEED_DEFAULT          (400.0f * LIFT_MICROSTEP)    /* 6400 */
 #define LIFT_SPEED_MIN              (100.0f * LIFT_MICROSTEP)    /* 1600 */
 #define LIFT_SPEED_MAX              STEPPER_MAX_SPEED            /* 10000 */

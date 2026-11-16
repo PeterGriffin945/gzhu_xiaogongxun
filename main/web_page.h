@@ -136,7 +136,7 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <input type="range" id="kd" min="0" max="1" step="0.01" value="0.15"></div>
       <div class="slider"><div class="top"><span>修正角速度上限 ω</span><b id="omv">1.5 rad/s</b></div>
         <input type="range" id="om" min="0" max="5" step="0.1" value="1.5"></div>
-      <div class="slider"><div class="top"><span>加速度（5 轴共用，微步/秒²）</span><b id="accv">19200 步/秒²</b></div>
+      <div class="slider"><div class="top"><span>加速度（5 轴共用，微步/秒²）</span><b id="accv">19200 微步/秒²</b></div>
         <input type="range" id="acc" min="1600" max="40000" step="400" value="19200"></div>
       <div class="btnrow" style="margin-top:6px">
         <button id="saveTune" class="primary">💾 立即保存到 Flash</button>
@@ -170,11 +170,11 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <button data-vx="0" data-vy="0" data-w="-1.6">右旋 ↻</button>
     </div>
     <div class="slider" style="margin-top:12px">
-      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">4800 步/秒</b></div>
-      <input type="range" id="cs" min="1600" max="10000" step="50" value="4800">
+      <div class="top"><span>底盘航速（手动 / 循迹基础）</span><b id="csv">2400 微步/秒 · 150 整步</b></div>
+      <input type="range" id="cs" min="800" max="4800" step="25" value="2400">
     </div>
     <div class="slider">
-      <div class="top"><span>升降速度 M5</span><b id="lsv">6400 步/秒</b></div>
+      <div class="top"><span>升降速度 M5</span><b id="lsv">6400 微步/秒 · 400 整步</b></div>
       <input type="range" id="ls" min="1600" max="10000" step="50" value="6400">
     </div>
     <div class="switch" style="margin-top:2px"><span>底盘使能 (EN / GPIO42)</span>
@@ -411,6 +411,14 @@ function sendSpeedSoon() {
   clearTimeout(speedTimer);
   speedTimer = setTimeout(sendSpeedNow, 60);
 }
+/* 与 app_config.h 的 WHEEL_MICROSTEP / LIFT_MICROSTEP 保持一致 */
+const MICROSTEP = 16;
+function fmtSpeed(micro) {
+  const full = micro / MICROSTEP;
+  const fullText = Math.abs(full - Math.round(full)) < 0.05
+    ? Math.round(full) : full.toFixed(1);
+  return Math.round(micro) + " 微步/秒 · " + fullText + " 整步";
+}
 function applySpeedValue(id, lab, value) {
   const p = speedPending[id];
   if (p && performance.now() < p.until && Math.abs(p.v - value) > 1) {
@@ -418,13 +426,13 @@ function applySpeedValue(id, lab, value) {
   }
   delete speedPending[id];
   $(id).value = value;
-  $(lab).textContent = Math.round(value) + " 步/秒";
+  $(lab).textContent = fmtSpeed(value);
 }
 [["cs", "csv"], ["ls", "lsv"]].forEach(([id, lab]) => {
   const el = $(id);
   el.addEventListener("pointerdown", () => S.dragging = id);
   el.addEventListener("input", () => {
-    $(lab).textContent = el.value + " 步/秒";
+    $(lab).textContent = fmtSpeed(+el.value);
     sendSpeedSoon();          /* 拖动过程中也实时生效 */
   });
   el.addEventListener("change", () => { S.dragging = null; sendSpeedNow(); });
@@ -550,7 +558,7 @@ const pidMap = [
   ["ki", "kiv", 2, ""],
   ["kd", "kdv", 2, ""],
   ["om", "omv", 1, " rad/s"],
-  ["acc", "accv", 0, " 步/秒²"]
+  ["acc", "accv", 0, " 微步/秒²"]
 ];
 const pidPending = {};
 let pidTimer = null;

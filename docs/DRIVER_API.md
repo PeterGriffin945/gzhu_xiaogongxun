@@ -390,7 +390,7 @@ esp_err_t chassis_start_translation(float dx_mm, float dy_mm, float peak_sps);
 bool      chassis_translation_active(void);
 bool      chassis_translation_done(void);
 
-void chassis_set_speeds(float chassis_sps, float lift_sps);  // 1600~10000 / 1600~10000 微步/秒
+void chassis_set_speeds(float chassis_sps, float lift_sps);  // 底盘 800~4800 / 升降 1600~10000 微步/秒
 void chassis_get_speeds(float *chassis_sps, float *lift_sps);
 void chassis_stop(void);
 void chassis_get_status(chassis_status_t *out);
@@ -398,7 +398,7 @@ void chassis_get_status(chassis_status_t *out);
 
 **`chassis_set_velocity` 的重要语义（当前版本）**：
 `vx / vy / omega` 只决定**方向与各轮比例**，四轮步频的峰值会被归一化到
-`chassis_base_speed`（`chassis_set_speeds` 的第一个参数，默认 4800 微步/秒）。
+`chassis_base_speed`（`chassis_set_speeds` 的第一个参数，默认 2400 微步/秒 = 150 整步/秒）。
 因此 `(0, 0.45, 0)` 与 `(0, 1, 0)` 都是“全速前进”，`(0, 0, 0)` 才是停车。
 如果希望按 m/s 精确控制，请直接调用 `mecanum_*` + `stepper_set_chassis_speeds()`。
 
@@ -765,7 +765,7 @@ const char *competition_error_name(competition_error_t error);
 | `manipulator.base_sweep_ms` | ms | 2400 | 200 … 10000 |
 | `manipulator.base_settle_ms` | ms | 450 | 0 … 5000 |
 | `manipulator.gripper_settle_ms` | ms | 300 | 0 … 5000 |
-| `manipulator.lift_speed_sps` | 步/秒 | 300 | 100 … 1200 |
+| `manipulator.lift_speed_sps` | 微步/秒 | 6400 | 1600 … 10000 |
 | `material_target_cx` | px | 160 | 0 … 319（QVGA 宽 320） |
 | `material_target_cy` | px | 120 | 0 … 239（QVGA 高 240） |
 | `ring_target_cx` | px | 160 | 0 … 319 |
@@ -776,7 +776,7 @@ const char *competition_error_name(competition_error_t error);
 | `vision_x_sign` | ±1 | 1 | 只能为 +1 或 -1 |
 | `vision_y_sign` | ±1 | 1 | 只能为 +1 或 -1 |
 | `align_nudge_mm` | mm | 3.0 | 1.0 … 50.0（<1mm 会四舍五入成 0 步） |
-| `align_speed_sps` | 步/秒 | 200 | 50 … 1000 |
+| `align_speed_sps` | 微步/秒 | 3200 | 800 … 16000 |
 | `tray_speed_angle` | ° | 60 | 1 … 89（必须 <90） |
 | `tray_index_ms` | ms | 500 | 20 … 10000 |
 | `station.min_black` | 路 | 6 | 2 … 8 |
@@ -893,7 +893,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/api/servo` | `ch` `a` | 角度 0~180（按当前协议下发） |
 | `/thresh` | `th`（或 `v`） | 阈值 0.0~5.0 V |
 | `/api/line` | `th` `inv` `rev` `kp` `ki` `kd` `om` `accel`（`base` 兼容） | 循迹参数 |
-| `/speed`（别名 `/api/speed`） | `chassis` `lift` | 1600~10000 微步/秒 |
+| `/speed`（别名 `/api/speed`） | `chassis` `lift` | 底盘 800~4800、升降 1600~10000 微步/秒 |
 | `/servo_proto` | `mode=0\|1\|2` | 切换协议并重发三路角度 |
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动 |
 | `/servo_center` | `ch` `a` | 校准中位停止值 |
