@@ -33,10 +33,15 @@ typedef struct {
 
 static i2c_master_dev_handle_t s_dev;
 static uint8_t s_addr;
-static uint8_t s_angles[LU9685_MAX_CH];
+static uint8_t s_angles[LU9685_MAX_CH];      /* 最近一次写入的原始角度 0~180 */
 static uint8_t s_center[LU9685_MAX_CH];
-/* 连续旋转通道的逻辑角度：由定时转动累积，供“走多少度”换算使用。 */
-static uint8_t s_target[LU9685_MAX_CH];
+/* 逻辑角度（度）：位置舵机为绝对角，连续舵机为定时点动累积角。 */
+static uint16_t s_target[LU9685_MAX_CH];
+static lu9685_mode_t s_mode[LU9685_MAX_CH];
+static float s_pos_deg[LU9685_MAX_CH];
+static float s_min_deg[LU9685_MAX_CH];
+static float s_max_deg[LU9685_MAX_CH];
+static float s_travel_deg[LU9685_MAX_CH];
 static volatile uint8_t s_proto = LU9685_PROTO_ANGLE;
 static portMUX_TYPE s_pulse_mux = portMUX_INITIALIZER_UNLOCKED;
 static lu9685_pulse_t s_pulse[LU9685_MAX_CH];
@@ -80,6 +85,34 @@ static void clear_pulse(uint8_t channel)
     taskENTER_CRITICAL(&s_pulse_mux);
     s_pulse[channel].active = false;
     taskEXIT_CRITICAL(&s_pulse_mux);
+}
+
+static float clamp_deg(uint8_t channel, float deg)
+{
+    if (deg < s_min_deg[channel]) {
+        return s_min_deg[channel];
+    }
+    if (deg > s_max_deg[channel]) {
+        return s_max_deg[channel];
+    }
+    return deg;
+}
+
+/* 逻辑角度 0~travel ↔ LU9685 原始角度 0~180 */
+static uint8_t raw_from_deg(uint8_t channel, float deg)
+{
+    float raw = deg * 180.0f / s_travel_deg[channel];
+    if (raw < 0.0f) {
+        raw = 0.0f;
+    } else if (raw > 180.0f) {
+        raw = 180.0f;
+    }
+    return (uint8_t)lroundf(raw);
+}
+
+static float deg_from_raw(uint8_t channel, uint8_t raw)
+{
+    return (float)raw * s_travel_deg[channel] / 180.0f;
 }
 
 static void lu9685_pulse_task(void *arg)
@@ -128,9 +161,23 @@ esp_err_t lu9685_init(void)
         s_angles[i] = LU9685_DEFAULT_CENTER;
         s_center[i] = LU9685_DEFAULT_CENTER;
         s_target[i] = LU9685_DEFAULT_CENTER;
+        s_mode[i] = LU9685_MODE_POSITION;
+        s_pos_deg[i] = (float)LU9685_DEFAULT_CENTER;
+        s_travel_deg[i] = 180.0f;
+        s_min_deg[i] = 0.0f;
+        s_max_deg[i] = 180.0f;
         s_pulse[i].active = false;
         s_pulse[i].faulted = false;
     }
+    /* CH0 底座：MG996 类位置舵机，逻辑 0~360°，最多一圈 */
+    s_travel_deg[LU9685_CH_BASE] = SERVO_BASE_TRAVEL_DEG;
+    s_min_deg[LU9685_CH_BASE] = SERVO_BASE_MIN_DEG;
+    s_max_deg[LU9685_CH_BASE] = SERVO_BASE_MAX_DEG;
+    s_pos_deg[LU9685_CH_BASE] = 90.0f;
+    /* CH8 夹爪：位置舵机，软限位随后由机械臂标定的开/合角度收紧 */
+    s_travel_deg[LU9685_CH_GRIPPER] = SERVO_GRIPPER_TRAVEL_DEG;
+    /* CH4 物料盘：保留连续旋转 + 定时分度 */
+    s_mode[LU9685_CH_TRAY] = LU9685_MODE_CONTINUOUS;
 
     BaseType_t ret = xTaskCreatePinnedToCore(lu9685_pulse_task, "srv_pulse", 4096, NULL, 3, NULL, 1);
     s_pulse_task_ready = (ret == pdPASS);
@@ -171,9 +218,9 @@ esp_err_t lu9685_init(void)
         return err;
     }
 
-    lu9685_set_angle(LU9685_CH_BASE, LU9685_DEFAULT_CENTER);
-    lu9685_set_angle(LU9685_CH_TRAY, LU9685_DEFAULT_CENTER);
-    lu9685_set_angle(LU9685_CH_GRIPPER, LU9685_DEFAULT_CENTER);
+    lu9685_move_deg(LU9685_CH_BASE, 90.0f);          /* 底座 90°（360° 行程中点） */
+    lu9685_set_angle(LU9685_CH_TRAY, LU9685_DEFAULT_CENTER);   /* 连续舵机中位停转 */
+    lu9685_move_deg(LU9685_CH_GRIPPER, 90.0f);
     ESP_LOGI(TAG, "LU9685 @0x%02X ready", s_addr);
     return ESP_OK;
 }
@@ -215,6 +262,10 @@ esp_err_t lu9685_set_angle(uint8_t channel, uint8_t angle)
     if (angle > 180) {
         angle = 180;
     }
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        /* 位置舵机：原始角度按行程换算成逻辑角度后统一限位 */
+        return lu9685_move_deg(channel, deg_from_raw(channel, angle));
+    }
     if (s_dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -230,7 +281,100 @@ esp_err_t lu9685_set_angle(uint8_t channel, uint8_t angle)
 
 uint8_t lu9685_get_angle(uint8_t channel)
 {
-    return (channel < LU9685_MAX_CH) ? s_angles[channel] : LU9685_DEFAULT_CENTER;
+    if (channel >= LU9685_MAX_CH) {
+        return LU9685_DEFAULT_CENTER;
+    }
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        return raw_from_deg(channel, s_pos_deg[channel]);
+    }
+    return s_angles[channel];
+}
+
+esp_err_t lu9685_set_mode(uint8_t channel, lu9685_mode_t mode)
+{
+    if (channel >= LU9685_MAX_CH || mode > LU9685_MODE_CONTINUOUS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_mode[channel] = mode;
+    if (mode == LU9685_MODE_POSITION) {
+        clear_pulse(channel);
+        s_pos_deg[channel] = deg_from_raw(channel, s_angles[channel]);
+    }
+    return ESP_OK;
+}
+
+lu9685_mode_t lu9685_get_mode(uint8_t channel)
+{
+    return (channel < LU9685_MAX_CH) ? s_mode[channel] : LU9685_MODE_POSITION;
+}
+
+esp_err_t lu9685_set_limits_deg(uint8_t channel, float min_deg, float max_deg)
+{
+    if (channel >= LU9685_MAX_CH || !isfinite(min_deg) || !isfinite(max_deg) ||
+        min_deg < 0.0f || max_deg > s_travel_deg[channel] || min_deg >= max_deg) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_min_deg[channel] = min_deg;
+    s_max_deg[channel] = max_deg;
+    /* 不主动移动：只约束后续命令，避免标定时舵机突然动作 */
+    return ESP_OK;
+}
+
+void lu9685_get_limits_deg(uint8_t channel, float *min_deg, float *max_deg)
+{
+    if (channel >= LU9685_MAX_CH) {
+        if (min_deg != NULL) {
+            *min_deg = 0.0f;
+        }
+        if (max_deg != NULL) {
+            *max_deg = 180.0f;
+        }
+        return;
+    }
+    if (min_deg != NULL) {
+        *min_deg = s_min_deg[channel];
+    }
+    if (max_deg != NULL) {
+        *max_deg = s_max_deg[channel];
+    }
+}
+
+esp_err_t lu9685_move_deg(uint8_t channel, float deg)
+{
+    if (channel >= LU9685_MAX_CH || !isfinite(deg)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_mode[channel] != LU9685_MODE_POSITION) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    float target = clamp_deg(channel, deg);
+    if (s_dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t raw = raw_from_deg(channel, target);
+    esp_err_t err = lu9685_write(channel, raw);
+    if (err == ESP_OK) {
+        s_angles[channel] = raw;
+        s_pos_deg[channel] = target;
+        clear_pulse(channel);
+    }
+    return err;
+}
+
+esp_err_t lu9685_step_deg(uint8_t channel, float delta_deg)
+{
+    if (channel >= LU9685_MAX_CH || !isfinite(delta_deg)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_mode[channel] != LU9685_MODE_POSITION) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return lu9685_move_deg(channel, s_pos_deg[channel] + delta_deg);
+}
+
+float lu9685_get_pos_deg(uint8_t channel)
+{
+    return (channel < LU9685_MAX_CH) ? s_pos_deg[channel] : 0.0f;
 }
 
 esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle)
@@ -255,6 +399,10 @@ esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
 {
     if (channel >= LU9685_MAX_CH) {
         return ESP_ERR_INVALID_ARG;
+    }
+    /* 位置舵机禁止“速度角 + 持续时间”，否则会一直转；请用 move_deg/step_deg */
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        return ESP_ERR_INVALID_STATE;
     }
     if (!s_pulse_task_ready) {
         return ESP_ERR_INVALID_STATE;
@@ -282,12 +430,19 @@ esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
     return ESP_OK;
 }
 
-esp_err_t lu9685_move_timed(uint8_t channel, uint8_t target_angle,
+esp_err_t lu9685_move_timed(uint8_t channel, uint16_t target_angle,
                             uint8_t speed_angle, uint32_t ms_per_180,
                             int stop_angle, uint32_t *duration_ms_out)
 {
     if (channel >= LU9685_MAX_CH) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        /* MG996 类位置舵机：写一次目标角度即到位并保持，绝不持续转 */
+        if (duration_ms_out != NULL) {
+            *duration_ms_out = 0;
+        }
+        return lu9685_move_deg(channel, (float)target_angle);
     }
     if (target_angle > 180) {
         target_angle = 180;
@@ -322,15 +477,27 @@ esp_err_t lu9685_move_timed(uint8_t channel, uint8_t target_angle,
     return err;
 }
 
-uint8_t lu9685_get_target_angle(uint8_t channel)
+uint16_t lu9685_get_target_angle(uint8_t channel)
 {
-    return (channel < LU9685_MAX_CH) ? s_target[channel] : LU9685_DEFAULT_CENTER;
+    if (channel >= LU9685_MAX_CH) {
+        return LU9685_DEFAULT_CENTER;
+    }
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        return (uint16_t)lroundf(s_pos_deg[channel]);
+    }
+    return s_target[channel];
 }
 
-esp_err_t lu9685_set_target_angle(uint8_t channel, uint8_t angle)
+esp_err_t lu9685_set_target_angle(uint8_t channel, uint16_t angle)
 {
     if (channel >= LU9685_MAX_CH) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        float target = clamp_deg(channel, (float)angle);
+        s_pos_deg[channel] = target;
+        s_angles[channel] = raw_from_deg(channel, target);
+        return ESP_OK;
     }
     s_target[channel] = (angle > 180) ? 180 : angle;
     return ESP_OK;
@@ -342,6 +509,10 @@ esp_err_t lu9685_pulse_cancel(uint8_t channel)
         return ESP_ERR_INVALID_ARG;
     }
     clear_pulse(channel);
+    /* 位置舵机本来就保持角度，不需要写中位（写中位反而会产生一次动作） */
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        return ESP_OK;
+    }
     if (s_dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -367,8 +538,20 @@ bool lu9685_pulse_faulted(uint8_t channel)
 void lu9685_pulse_stop_all(void)
 {
     for (int i = 0; i < LU9685_MAX_CH; ++i) {
+        if (s_mode[i] == LU9685_MODE_POSITION) {
+            clear_pulse((uint8_t)i);
+            continue;
+        }
         if (s_pulse[i].active || i == LU9685_CH_TRAY) {
             lu9685_pulse_cancel((uint8_t)i);
         }
+    }
+}
+
+/* 位置舵机保持当前位置（急停用）：仅取消任何定时器，不产生新动作。 */
+void lu9685_hold_all(void)
+{
+    for (int i = 0; i < LU9685_MAX_CH; ++i) {
+        clear_pulse((uint8_t)i);
     }
 }

@@ -156,6 +156,10 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
   <section class="card">
     <h2>运动控制 <span id="modebadge" class="badge">手动</span></h2>
     <div class="btnrow" style="margin-bottom:10px">
+      <button id="estopBtn" class="stop" style="flex:1 1 100%;padding:13px;font-size:15px;font-weight:600">■ 急停（全部停止）</button>
+      <button id="estopClear" class="primary" style="flex:1 1 100%;padding:12px;font-size:14px;display:none">✔ 解除急停，恢复控制</button>
+    </div>
+    <div class="btnrow" style="margin-bottom:10px">
       <button id="mMan" class="primary active">手动遥控</button>
       <button id="mLine" class="primary">PID 循迹</button>
     </div>
@@ -206,22 +210,22 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
     </div>
 
     <div class="srv">
-      <div class="top"><span>底座旋转 CH0 · 20kg</span><b id="a0">90°</b></div>
+      <div class="top"><span>底座旋转 CH0 · 20kg（0~360°）</span><b id="a0">90°</b></div>
       <div class="srow">
         <button data-rng="s0" data-d="-1">−1°</button>
-        <input type="range" id="s0" min="0" max="180" step="1" value="90">
+        <input type="range" id="s0" min="0" max="360" step="1" value="90">
         <button data-rng="s0" data-d="1">+1°</button>
         <button class="stop" data-rng="s0" data-mid="1">中位</button>
       </div>
     </div>
 
     <div class="srv">
-      <div class="top"><span>物料盘 CH4 · SG90</span><b id="a4">90°</b></div>
+      <div class="top"><span>物料盘 CH4 · SG90（连续舵机，用盘位按钮）</span><b id="a4">90°</b></div>
       <div class="srow">
-        <button data-rng="s4" data-d="-1">−1°</button>
-        <input type="range" id="s4" min="0" max="180" step="1" value="90">
-        <button data-rng="s4" data-d="1">+1°</button>
-        <button class="stop" data-rng="s4" data-mid="1">中位</button>
+        <button data-rng="s4" data-d="-1" disabled>−1°</button>
+        <input type="range" id="s4" min="0" max="180" step="1" value="90" disabled>
+        <button data-rng="s4" data-d="1" disabled>+1°</button>
+        <button class="stop" data-rng="s4" data-mid="1" disabled>中位</button>
       </div>
       <div class="btnrow" style="margin-top:8px">
         <button class="ghost" data-slot="0">slot 0</button>
@@ -243,13 +247,25 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       </div>
     </div>
 
+    <div class="srv">
+      <div class="top"><span>位置舵机步进（CH0 / CH8）</span><b id="stepInfo">15°</b></div>
+      <div class="row"><label>步进角（°）</label>
+        <input id="stepDeg" type="number" min="1" max="90" step="1" value="15"
+               style="width:90px;padding:6px;border-radius:8px;border:1px solid #273a4c;background:#17222e;color:#e6edf3">
+      </div>
+      <div class="btnrow">
+        <button id="baseStepMinus">CH0 −步进</button>
+        <button id="baseStepPlus">CH0 +步进</button>
+        <button id="gripStepMinus">CH8 −步进</button>
+        <button id="gripStepPlus">CH8 +步进</button>
+      </div>
+    </div>
+
     <div class="pulse">
-      <div class="ttl"><span>360° 连续舵机 · 定时点动</span><b id="pulseInfo">—</b></div>
+      <div class="ttl"><span>连续舵机定时点动（仅 CH4 物料盘）</span><b id="pulseInfo">—</b></div>
       <div class="row" style="margin-top:6px"><label>通道</label>
         <select id="pCh">
-          <option value="0">CH0 底座</option>
-          <option value="4">CH4 物料盘</option>
-          <option value="8">CH8 夹爪</option>
+          <option value="4">CH4 物料盘（连续）</option>
         </select>
       </div>
       <div class="slider"><div class="top"><span>速度角（&lt;90 正转 / &gt;90 反转）</span><b id="pAv">60°</b></div>
@@ -266,8 +282,10 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
 
     <div class="hint">
       滑块拖动时 30ms 节流实时下发；鼠标悬停滑块滚动滚轮可按 1° 微调。<br>
-      CH0 底座与 CH4 物料盘是 360° 连续旋转舵机：滑块给的是“逻辑角度”，程序按角度差换算转动时间，到位自动停在中位，
-      不再一直转。速度角与 180° 用时可在"比赛自动流程 → 标定"里调整；中位校准到实际停转点（85~95）。
+      CH0 底座（0~360°）与 CH8 夹爪（软限位由标定的开/合角度收紧）按 MG996
+      <b>位置舵机</b>控制：写一次目标角度即到位保持，不会持续旋转；用“位置舵机步进”
+      按指定角度（默认 15°）一点点移动。<br>
+      CH4 物料盘是连续舵机，直接写角度会一直转，请使用上方 slot 按钮或定时点动。
     </div>
   </section>
 
@@ -456,7 +474,8 @@ const CENTER = { 0: 90, 4: 90, 8: 90 };
 const srvState = {};
 
 function servoSet(ch, a, force) {
-  a = Math.max(0, Math.min(180, Math.round(a)));
+  const max = ch === 0 ? 360 : 180;
+  a = Math.max(0, Math.min(max, Math.round(a)));
   const st = srvState[ch];
   const send = () => { st.last = performance.now(); api(`/api/servo?ch=${ch}&a=${a}`); };
   clearTimeout(st.timer);
@@ -491,7 +510,8 @@ SRV.forEach(s => {
   /* 电脑滚轮 1° 精细调节 */
   el.addEventListener("wheel", e => {
     e.preventDefault();
-    const v = Math.max(0, Math.min(180, +el.value + (e.deltaY < 0 ? 1 : -1)));
+    const max = s.ch === 0 ? 360 : 180;
+    const v = Math.max(0, Math.min(max, +el.value + (e.deltaY < 0 ? 1 : -1)));
     el.value = v;
     $(s.lab).textContent = v + "°";
     servoSet(s.ch, v, true);
@@ -503,8 +523,9 @@ document.querySelectorAll(".srow button[data-rng]").forEach(b => {
   b.onclick = () => {
     const ch = SRV.find(x => x.rng === b.dataset.rng).ch;
     const el = $(b.dataset.rng);
+    const max = ch === 0 ? 360 : 180;
     const v = b.dataset.mid ? CENTER[ch]
-                            : Math.max(0, Math.min(180, +el.value + (+b.dataset.d)));
+                            : Math.max(0, Math.min(max, +el.value + (+b.dataset.d)));
     el.value = v;
     $(SRV.find(x => x.ch === ch).lab).textContent = v + "°";
     servoSet(ch, v, true);
@@ -544,10 +565,35 @@ $("pulseGo").onclick = () => {
 };
 $("pulseStop").onclick = () => {
   const ch = +pCh.value;
-  servoSet(ch, CENTER[ch], true);
-  syncServoUI(ch, CENTER[ch]);
+  api(`/servo_stop?ch=${ch}`);
   $("pulseInfo").textContent = `CH${ch} 停止`;
 };
+
+/* ---- 位置舵机步进（CH0 / CH8），一次只走指定角度 ---- */
+function stepServo(ch, sign) {
+  const step = Math.max(1, Math.min(90, Math.round(+$("stepDeg").value || 15)));
+  $("stepInfo").textContent = step + "°";
+  const cur = S.status ? (ch === 0 ? S.status.srv[0] : S.status.srv[2]) : 90;
+  const max = ch === 0 ? 360 : 180;
+  const target = Math.max(0, Math.min(max, Math.round(cur) + sign * step));
+  servoSet(ch, target, true);
+  syncServoUI(ch, target);
+}
+$("stepDeg").oninput = () => {
+  const v = Math.max(1, Math.min(90, Math.round(+$("stepDeg").value || 15)));
+  $("stepInfo").textContent = v + "°";
+};
+$("baseStepMinus").onclick = () => stepServo(0, -1);
+$("baseStepPlus").onclick = () => stepServo(0, 1);
+$("gripStepMinus").onclick = () => stepServo(8, -1);
+$("gripStepPlus").onclick = () => stepServo(8, 1);
+
+/* ---- 急停 / 解除 ---- */
+$("estopBtn").onclick = () => {
+  stopMove(); stopLift();
+  api("/api/estop");
+};
+$("estopClear").onclick = () => api("/api/estop/clear");
 
 /* ---- 阈值 / 极性 / 顺序 ---- */
 const th = $("th"), inv = $("inv"), rev = $("rev");
@@ -659,6 +705,10 @@ function render(j) {
 
   $("enChassis").checked = !!j.en[0];
   $("enLift").checked = !!j.en[1];
+
+  $("estopClear").style.display = j.estop ? "" : "none";
+  $("estopBtn").disabled = !!j.estop;
+  $("estopBtn").textContent = j.estop ? "■ 已急停（点下方解除）" : "■ 急停（全部停止）";
 
   if (S.dragging !== "th") {
     $("th").value = j.th; $("thv").textContent = j.th.toFixed(2) + " V";

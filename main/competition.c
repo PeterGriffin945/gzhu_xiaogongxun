@@ -14,6 +14,7 @@
 #include "line_follow.h"
 #include "lu9685.h"
 #include "mecanum.h"
+#include "safety.h"
 #include "stepper.h"
 
 #define COMPETITION_PERIOD_MS 10
@@ -87,7 +88,7 @@ static void default_config(competition_config_t *config)
             .gripper_closed = 80,
             .base_speed_angle = ARM_BASE_SPEED_ANGLE_DEFAULT,
             .base_sweep_ms = ARM_BASE_SWEEP_MS_DEFAULT,
-            .base_settle_ms = 450,
+            .base_settle_ms = 700,   /* 位置舵机按实际行程留足到位时间 */
             .gripper_settle_ms = 300,
             .lift_speed_sps = LIFT_SPEED_DEFAULT,
         },
@@ -118,8 +119,8 @@ static bool valid_config(const competition_config_t *config)
         m->z_ground_pick < 0 || m->z_ground_pick > m->z_max ||
         m->z_tray < 0 || m->z_tray > m->z_max ||
         m->z_ground_place < 0 || m->z_ground_place > m->z_max ||
-        m->base_stow > 180 || m->base_pick > 180 || m->base_tray > 180 ||
-        m->base_place > 180 || m->gripper_open > 180 || m->gripper_closed > 180 ||
+        m->base_stow > 360 || m->base_pick > 360 || m->base_tray > 360 ||
+        m->base_place > 360 || m->gripper_open > 180 || m->gripper_closed > 180 ||
         m->gripper_open == m->gripper_closed || m->base_settle_ms > 5000 ||
         m->base_speed_angle < 10 || m->base_speed_angle > 170 ||
         m->base_sweep_ms < 200 || m->base_sweep_ms > 10000 ||
@@ -663,6 +664,9 @@ esp_err_t competition_init(void)
 
 esp_err_t competition_start(void)
 {
+    if (safety_is_stopped()) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }

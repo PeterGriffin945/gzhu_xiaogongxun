@@ -19,6 +19,7 @@
 #include "line_follow.h"
 #include "lu9685.h"
 #include "mecanum.h"
+#include "safety.h"
 #include "settings.h"
 #include "stepper.h"
 #include "web_page.h"
@@ -89,8 +90,23 @@ static esp_err_t send_err(httpd_req_t *req, const char *msg)
     return httpd_resp_sendstr(req, msg);
 }
 
+/* 急停锁存期间所有运动类命令一律拒绝，必须显式解除 */
+static bool safety_blocked(httpd_req_t *req)
+{
+    if (!safety_is_stopped()) {
+        return false;
+    }
+    httpd_resp_set_status(req, "423 Locked");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":0,\"msg\":\"emergency stop active\"}");
+    return true;
+}
+
 static bool manual_allowed(httpd_req_t *req)
 {
+    if (safety_blocked(req)) {
+        return false;
+    }
     if (!competition_auto_active()) {
         return true;
     }
@@ -103,6 +119,9 @@ static bool manual_allowed(httpd_req_t *req)
 /* 调试暂停期间允许人工接管底盘/升降/舵机；其余自动流程仍独占执行器 */
 static bool manual_allowed_or_debug(httpd_req_t *req)
 {
+    if (safety_blocked(req)) {
+        return false;
+    }
     if (!competition_auto_active() || competition_debug_paused()) {
         return true;
     }
@@ -149,10 +168,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"cs\":%.0f,\"lsp\":%.0f,"
         "\"v\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f],"
         "\"b\":[%d,%d,%d,%d,%d,%d,%d,%d],"
-        "\"srv\":[%d,%d,%d],\"srv_ok\":%d,\"proto\":%d,\"ctr\":[%d,%d,%d],"
+        "\"srv\":[%.0f,%d,%d],\"srv_ok\":%d,\"proto\":%d,\"ctr\":[%d,%d,%d],"
         "\"lift\":%.0f,\"err\":%.2f,\"ls\":%d,\"zpos\":%" PRId32 ",\"zmove\":%d,"
         "\"ws\":[%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 "],"
-        "\"seq\":%" PRIu32 ",\"wifi\":%d,\"ip\":\"%s\"}",
+        "\"seq\":%" PRIu32 ",\"estop\":%d,\"wifi\":%d,\"ip\":\"%s\"}",
         (int)st.mode, st.vx, st.vy, st.omega,
         stepper_chassis_enabled() ? 1 : 0, stepper_lift_enabled() ? 1 : 0,
         p.threshold, p.black_high ? 1 : 0, p.reverse ? 1 : 0,
@@ -160,14 +179,15 @@ static esp_err_t status_handler(httpd_req_t *req)
         chassis_sps, lift_sps,
         v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
         black[0], black[1], black[2], black[3], black[4], black[5], black[6], black[7],
-        lu9685_get_target_angle(LU9685_CH_BASE), lu9685_get_angle(LU9685_CH_TRAY),
+        (double)lu9685_get_pos_deg(LU9685_CH_BASE), lu9685_get_angle(LU9685_CH_TRAY),
         lu9685_get_angle(LU9685_CH_GRIPPER), lu9685_available() ? 1 : 0,
         (int)lu9685_get_protocol(), lu9685_get_center(LU9685_CH_BASE),
         lu9685_get_center(LU9685_CH_TRAY), lu9685_get_center(LU9685_CH_GRIPPER),
         st.lift_sps, st.line_error, st.line_seen ? 1 : 0,
         stepper_get_position(AXIS_LIFT), stepper_move_active(AXIS_LIFT) ? 1 : 0,
         st.wheel_steps[0], st.wheel_steps[1], st.wheel_steps[2], st.wheel_steps[3],
-        seq, wifi_sta_connected() ? 1 : 0, wifi_sta_ip());
+        seq, safety_is_stopped() ? 1 : 0,
+        wifi_sta_connected() ? 1 : 0, wifi_sta_ip());
     if (n < 0 || n >= (int)sizeof(buf)) {
         return httpd_resp_send_500(req);
     }
@@ -254,30 +274,27 @@ static esp_err_t servo_handler(httpd_req_t *req)
     if (!lu9685_available()) {
         return send_err(req, "{\"ok\":0,\"msg\":\"LU9685 offline\"}");
     }
-    if (a < 0) {
-        a = 0;
-    } else if (a > 180) {
-        a = 180;
-    }
-
     esp_err_t err;
     if (ch == LU9685_CH_BASE) {
-        /* CH0 是 360° 连续旋转舵机：按角度差定时转动，不能直接写角度。 */
-        competition_config_t cfg = { 0 };
-        competition_get_config(&cfg);
-        uint8_t speed = cfg.manipulator.base_speed_angle;
-        uint32_t sweep = cfg.manipulator.base_sweep_ms;
-        if (speed < 10 || speed > 170) {
-            speed = ARM_BASE_SPEED_ANGLE_DEFAULT;
+        /* CH0 底座：MG996 类位置舵机，a 为逻辑角度 0~360，写一次即到位保持 */
+        if (a < 0) {
+            a = 0;
+        } else if (a > 360) {
+            a = 360;
         }
-        if (sweep < 200 || sweep > 10000) {
-            sweep = ARM_BASE_SWEEP_MS_DEFAULT;
-        }
-        err = lu9685_move_timed((uint8_t)ch, (uint8_t)a, speed, sweep, -1, NULL);
+        err = lu9685_move_deg((uint8_t)ch, (float)a);
+    } else if (lu9685_get_mode((uint8_t)ch) == LU9685_MODE_CONTINUOUS) {
+        /* 连续舵机不能直接写角度，否则会一直转；请用 /servo_pulse 或盘位命令 */
+        return send_err(req, "{\"ok\":0,\"msg\":\"continuous servo: use pulse/tray commands\"}");
     } else {
+        if (a < 0) {
+            a = 0;
+        } else if (a > 180) {
+            a = 180;
+        }
         err = lu9685_set_angle((uint8_t)ch, (uint8_t)a);
     }
-    return (err == ESP_OK) ? send_ok(req) : send_err(req, "{\"ok\":0,\"msg\":\"servo write failed\"}");
+    return (err == ESP_OK) ? send_ok(req) : send_err(req, "{\"ok\":0,\"msg\":\"servo write failed or out of limits\"}");
 }
 
 static esp_err_t servo_proto_handler(httpd_req_t *req)
@@ -290,16 +307,21 @@ static esp_err_t servo_proto_handler(httpd_req_t *req)
         return send_err(req, "{\"ok\":0,\"msg\":\"mode=0|1|2\"}");
     }
     static const uint8_t chs[3] = { LU9685_CH_BASE, LU9685_CH_TRAY, LU9685_CH_GRIPPER };
-    /* 正在点动的通道先按旧协议写回中位并取消定时，否则切协议后
-       舵机会失去自动停止，连续旋转舵机将一直转。 */
+    /* 正在点动的通道先按旧协议停止，避免切协议后失去自动停止 */
     for (int i = 0; i < 3; ++i) {
-        if (lu9685_pulse_active(chs[i])) {
+        if (lu9685_get_mode(chs[i]) == LU9685_MODE_CONTINUOUS &&
+            lu9685_pulse_active(chs[i])) {
             lu9685_pulse_cancel(chs[i]);
         }
     }
     lu9685_set_protocol((uint8_t)mode);
+    /* 按新协议重发当前姿态：位置舵机保持当前角度，连续舵机回中位停转 */
     for (int i = 0; i < 3; ++i) {
-        lu9685_set_angle(chs[i], lu9685_get_angle(chs[i]));
+        if (lu9685_get_mode(chs[i]) == LU9685_MODE_POSITION) {
+            lu9685_move_deg(chs[i], lu9685_get_pos_deg(chs[i]));
+        } else {
+            lu9685_set_angle(chs[i], lu9685_get_center(chs[i]));
+        }
     }
     settings_request_save();
     return send_ok(req);
@@ -326,6 +348,20 @@ static esp_err_t servo_pulse_handler(httpd_req_t *req)
     }
     esp_err_t err = lu9685_pulse_start((uint8_t)ch, (uint8_t)angle, (uint32_t)dur_ms, stop);
     return (err == ESP_OK) ? send_ok(req) : send_err(req, "{\"ok\":0,\"msg\":\"pulse unavailable\"}");
+}
+
+static esp_err_t servo_stop_handler(httpd_req_t *req)
+{
+    if (!manual_allowed_or_debug(req)) {
+        return ESP_OK;
+    }
+    int ch = -1;
+    if (!query_int(req, "ch", &ch) || ch < 0 || ch >= 16) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"ch required\"}");
+    }
+    /* 连续舵机：取消定时并写回中位（停转）；位置舵机：无动作，返回 OK */
+    esp_err_t err = lu9685_pulse_cancel((uint8_t)ch);
+    return (err == ESP_OK) ? send_ok(req) : send_err(req, "{\"ok\":0,\"msg\":\"servo stop failed\"}");
 }
 
 static esp_err_t servo_center_handler(httpd_req_t *req)
@@ -417,9 +453,21 @@ static esp_err_t line_handler(httpd_req_t *req)
 
 static esp_err_t stop_handler(httpd_req_t *req)
 {
-    /* 全局急停：连续舵机的定时点动也必须立即取消，否则会继续转到超时。 */
+    /* 平滑停车 + 中止比赛（不锁存，可立即继续手动操作） */
     lu9685_pulse_stop_all();
     competition_abort(COMPETITION_ERROR_MANUAL_STOP);
+    return send_ok(req);
+}
+
+static esp_err_t estop_handler(httpd_req_t *req)
+{
+    safety_emergency_stop();
+    return send_ok(req);
+}
+
+static esp_err_t estop_clear_handler(httpd_req_t *req)
+{
+    safety_clear();
     return send_ok(req);
 }
 
@@ -619,12 +667,15 @@ esp_err_t web_server_start(void)
         { .uri = "/api/servo", .method = HTTP_GET, .handler = servo_handler },
         { .uri = "/api/line", .method = HTTP_GET, .handler = line_handler },
         { .uri = "/api/stop", .method = HTTP_GET, .handler = stop_handler },
+        { .uri = "/api/estop", .method = HTTP_GET, .handler = estop_handler },
+        { .uri = "/api/estop/clear", .method = HTTP_GET, .handler = estop_clear_handler },
         { .uri = "/thresh", .method = HTTP_GET, .handler = thresh_handler },
         { .uri = "/speed", .method = HTTP_GET, .handler = speed_handler },
         { .uri = "/api/speed", .method = HTTP_GET, .handler = speed_handler },
         { .uri = "/servo_proto", .method = HTTP_GET, .handler = servo_proto_handler },
         { .uri = "/servo_pulse", .method = HTTP_GET, .handler = servo_pulse_handler },
         { .uri = "/servo_center", .method = HTTP_GET, .handler = servo_center_handler },
+        { .uri = "/servo_stop", .method = HTTP_GET, .handler = servo_stop_handler },
         { .uri = "/api/competition", .method = HTTP_GET, .handler = competition_status_handler },
         { .uri = "/api/competition/cmd", .method = HTTP_GET, .handler = competition_command_handler },
         { .uri = "/api/competition/config", .method = HTTP_GET, .handler = competition_config_handler },

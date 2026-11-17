@@ -14,6 +14,7 @@ idf_component_register(
         "tray_controller.c"
         "manipulator.c"
         "competition.c"
+        "safety.c"
         "settings.c"
         "wifi_sta.c"
         "web_server.c"

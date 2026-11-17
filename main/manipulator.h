@@ -27,10 +27,10 @@ typedef struct {
     int32_t z_tray;
     int32_t z_ground_place;
     int32_t z_max;
-    uint8_t base_stow;
-    uint8_t base_pick;
-    uint8_t base_tray;
-    uint8_t base_place;
+    uint16_t base_stow;     /* 逻辑角度 0~360（底座按 360° 行程标定） */
+    uint16_t base_pick;
+    uint16_t base_tray;
+    uint16_t base_place;
     uint8_t gripper_open;
     uint8_t gripper_closed;
     /* CH0 为 360° 连续旋转舵机：用速度角 + 时间控制转角 */

@@ -120,10 +120,20 @@ extern "C" {
 #define LIFT_SPEED_MIN              (100.0f * LIFT_MICROSTEP)    /* 1600 */
 #define LIFT_SPEED_MAX              STEPPER_MAX_SPEED            /* 10000 */
 
-/* 底座 CH0 是 360° 连续旋转舵机：用“速度角 + 持续时间”控制转角。
- * 速度角 <90 正转、>90 反转；sweep 为逻辑 0~180° 行程所需时间。 */
+/* 底座 CH0 保留的速度角/行程配置，仅用于历史兼容（位置模式不再使用）。 */
 #define ARM_BASE_SPEED_ANGLE_DEFAULT 60
 #define ARM_BASE_SWEEP_MS_DEFAULT    2400U
+
+/* 舵机类型与行程（逻辑角度，MG996 类位置舵机）
+ * CH0 底座 20kg：0~360° 位置控制，最大一圈，超出软限位拒绝；
+ * CH8 夹爪 20kg：0~180°，软限位由标定的开/合角度自动收紧；
+ * CH4 物料盘 SG90：继续用连续旋转 + 定时分度（托盘逻辑依赖）。
+ * 每次步进命令默认 15°，可在网页调整。 */
+#define SERVO_BASE_TRAVEL_DEG     360.0f
+#define SERVO_BASE_MIN_DEG        0.0f
+#define SERVO_BASE_MAX_DEG        360.0f
+#define SERVO_GRIPPER_TRAVEL_DEG  180.0f
+#define SERVO_STEP_DEG_DEFAULT    15.0f
 
 /* ==========================================================================
  * 五、传感器采样

@@ -272,50 +272,71 @@ typedef enum {
     LU9685_PROTO_PULSE_HI = 2,   // [ch, pulse_hi, pulse_lo]
 } lu9685_proto_t;
 
+typedef enum {
+    LU9685_MODE_POSITION   = 0,  // MG996 类位置舵机：写一次角度即到位保持
+    LU9685_MODE_CONTINUOUS = 1,  // 连续旋转舵机（物料盘）
+} lu9685_mode_t;
+
 esp_err_t lu9685_init(void);
 bool      lu9685_available(void);
-bool      lu9685_pulse_ready(void);          // 点动后台任务是否可用
+bool      lu9685_pulse_ready(void);
 uint8_t   lu9685_address(void);
+
+esp_err_t lu9685_set_mode(uint8_t channel, lu9685_mode_t mode);
+lu9685_mode_t lu9685_get_mode(uint8_t channel);
+
+/* 位置舵机（逻辑角度，度） */
+esp_err_t lu9685_move_deg(uint8_t channel, float deg);       // 绝对角度，限位内
+esp_err_t lu9685_step_deg(uint8_t channel, float delta_deg); // 相对步进（如 ±15°）
+float     lu9685_get_pos_deg(uint8_t channel);
+esp_err_t lu9685_set_limits_deg(uint8_t channel, float min_deg, float max_deg);
+void      lu9685_get_limits_deg(uint8_t channel, float *min_deg, float *max_deg);
 
 esp_err_t lu9685_set_protocol(uint8_t mode);   // 0/1/2，立即生效
 uint8_t   lu9685_get_protocol(void);
 
-esp_err_t lu9685_set_angle(uint8_t channel, uint8_t angle);   // 0~180，超限自动限幅
-uint8_t   lu9685_get_angle(uint8_t channel);                  // 缓存值，默认 90
+esp_err_t lu9685_set_angle(uint8_t channel, uint8_t angle);   // 原始 0~180
+uint8_t   lu9685_get_angle(uint8_t channel);                  // 原始角度
 
-esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle);  // 360° 舵机停止点，建议 85~95
+esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle);  // 连续舵机停止点
 uint8_t   lu9685_get_center(uint8_t channel);
 
+/* 仅连续舵机可用；位置通道会返回 ESP_ERR_INVALID_STATE */
 esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
-                             uint32_t duration_ms, int stop_angle);  // stop<0 = 用中位
+                             uint32_t duration_ms, int stop_angle);
 esp_err_t lu9685_pulse_cancel(uint8_t channel);
 bool      lu9685_pulse_active(uint8_t channel);
 bool      lu9685_pulse_faulted(uint8_t channel);
 void      lu9685_pulse_stop_all(void);
+void      lu9685_hold_all(void);      // 急停：取消定时器，位置舵机保持
 
-// 360° 连续舵机的“定时定位”：按逻辑角度差换算转动时间，到点自动停
-esp_err_t lu9685_move_timed(uint8_t channel, uint8_t target_angle,
+/* 兼容入口：位置通道走 move_deg；连续通道按时间转动 */
+esp_err_t lu9685_move_timed(uint8_t channel, uint16_t target_angle,
                             uint8_t speed_angle, uint32_t ms_per_180,
                             int stop_angle, uint32_t *duration_ms_out);
-uint8_t   lu9685_get_target_angle(uint8_t channel);   // 逻辑角度，默认 90
-esp_err_t lu9685_set_target_angle(uint8_t channel, uint8_t angle);  // 仅声明姿态，不转动
+uint16_t  lu9685_get_target_angle(uint8_t channel);
+esp_err_t lu9685_set_target_angle(uint8_t channel, uint16_t angle); // 声明姿态，不转
 ```
 
-- 板子离线时：`lu9685_available()==false`，`set_angle` 直接返回
+- **通道模式**：CH0 底座、CH8 夹爪默认 `POSITION`（MG996 类）；
+  CH4 物料盘默认 `CONTINUOUS`。位置通道调用 `pulse_start` 一律返回
+  `ESP_ERR_INVALID_STATE`，从根上避免“一直转”。
+- **位置舵机**：`move_deg` 写一次原始角度即到位并保持；所有命令都会先按
+  `set_limits_deg()` 的软限位夹紧。CH0 行程 0~360°（原始 0~180 线性映射）；
+  CH8 行程 0~180°，软限位由 `manipulator_configure()` 按标定的
+  `gripper_open/gripper_closed` 区间自动设置。`step_deg` 用于“一次走 15°”。
+- 板子离线时：`lu9685_available()==false`，写角度返回
   `ESP_ERR_INVALID_STATE`，**不会更新缓存**。
-- `pulse_start` 先发 `speed_angle`，**后台任务**在 `duration_ms` 后自动发停止角；
-  同一通道再次调用会重新计时；`duration_ms` 内部限幅 60000ms。
-- `pulse_cancel` 立即清除计时并写回中位；`pulse_active` 表示计时器仍在等待；
-  `pulse_faulted` 表示停止角连续写失败 3 次（粘滞故障，`pulse_start` 才会清除）。
-- 360° 连续舵机判定：`90` 附近停转，偏离越远越快。用 `pulse_start(ch, 60, 500, -1)`
+- `pulse_start`（仅连续通道）先发 `speed_angle`，**后台任务**在 `duration_ms`
+  后自动发停止角；同一通道再次调用会重新计时；`duration_ms` 限幅 60000ms。
+- `pulse_cancel` 对连续通道清除计时并写回中位；对位置通道仅清除计时、不产生动作。
+- 连续舵机（CH4）：`90` 附近停转，偏离越远越快。用 `pulse_start(ch, 60, 500, -1)`
   即是“正转约半秒”。
-- **`move_timed` 是连续舵机的角度控制入口**：内部维护每通道逻辑角度（默认 90），
-  `duration = |target - current| / 180 × ms_per_180`，正转用 `speed_angle`、
-  反转用 `180 - speed_angle`，到点自动写回中位；`speed_angle` 必须 1~179。
-  底座 CH0 的 `speed_angle` / `ms_per_180` 来自比赛标定（`bspeed` / `bsweep`）。
-- 手动点动（`pulse_start`）不更新逻辑角度；对 CH0 使用后逻辑基准会偏移，
-  开赛时 `competition_start()` 会用 `set_target_angle(CH0, bstow)` 重新声明基准，
-  因此启动前需人工把底座摆到运输角。
+- **`move_timed`**：位置通道等价于 `move_deg(target)`（`duration_ms_out=0`，
+  由调用方用 settle 时间等待）；连续通道按角度差换算持续时间。
+- 底座姿态声明：开赛时 `competition_start()` 用
+  `set_target_angle(CH0, bstow)` 声明当前物理姿态为运输角（不产生动作），
+  启动前需人工把底座摆到该角度。
 
 ### 4.6 `line_follow.h` —— 8 路加权 PID
 
@@ -618,15 +639,16 @@ typedef struct {
     int32_t z_tray;             // 盘内取放 Z，步；0..z_max
     int32_t z_ground_place;     // 靶环放置 Z，步；0..z_max
     int32_t z_max;              // Z 最大软限位，微步；1600..1600000
-    uint8_t base_stow;          // 底座运输角，0~180（逻辑角，按时间定位）
-    uint8_t base_pick;          // 底座地面抓取角，0~180
-    uint8_t base_tray;          // 底座盘位角，0~180
-    uint8_t base_place;         // 底座靶环角，0~180
+    uint16_t base_stow;         // 底座运输角，0~360（位置舵机逻辑角）
+    uint16_t base_pick;         // 底座地面抓取角，0~360
+    uint16_t base_tray;         // 底座盘位角，0~360
+    uint16_t base_place;        // 底座靶环角，0~360
     uint8_t gripper_open;       // 夹爪张开角，0~180，且 ≠ closed
     uint8_t gripper_closed;     // 夹爪闭合角，0~180，且 ≠ open
-    uint8_t base_speed_angle;   // CH0 连续舵机速度角 10~170（<90 正转）
-    uint16_t base_sweep_ms;     // CH0 逻辑 0~180° 行程时间 200~10000ms
-    uint16_t base_settle_ms;    // 底座到位稳定，0~5000ms
+                                // 两者自动构成夹爪软限位区间
+    uint8_t base_speed_angle;   // 已废弃（底座改为位置控制），保留兼容
+    uint16_t base_sweep_ms;     // 已废弃，保留兼容
+    uint16_t base_settle_ms;    // 底座到位稳定，0~5000ms（建议 600~1200）
     uint16_t gripper_settle_ms; // 夹爪到位稳定，0~5000ms
     float lift_speed_sps;       // Z 定步峰值速度，1600~10000 微步/秒
 } manipulator_config_t;
@@ -761,10 +783,10 @@ const char *competition_error_name(competition_error_t error);
 | `manipulator.z_tray` | 微步 | 40000 | 0 … `z_max` |
 | `manipulator.z_ground_place` | 微步 | 96000 | 0 … `z_max` |
 | `manipulator.z_max` | 微步 | 160000 | 1600 … 1600000 |
-| `manipulator.base_stow` | 逻辑° | 90 | 0 … 180 |
-| `manipulator.base_pick` | 逻辑° | 0 | 0 … 180 |
-| `manipulator.base_tray` | 逻辑° | 180 | 0 … 180 |
-| `manipulator.base_place` | 逻辑° | 0 | 0 … 180 |
+| `manipulator.base_stow` | 逻辑° | 90 | 0 … 360 |
+| `manipulator.base_pick` | 逻辑° | 0 | 0 … 360 |
+| `manipulator.base_tray` | 逻辑° | 180 | 0 … 360 |
+| `manipulator.base_place` | 逻辑° | 0 | 0 … 360 |
 | `manipulator.gripper_open` | ° | 30 | 0 … 180，且 ≠ `gripper_closed` |
 | `manipulator.gripper_closed` | ° | 80 | 0 … 180，且 ≠ `gripper_open` |
 | `manipulator.base_speed_angle` | ° | 60 | 10 … 170（<90 正转） |
@@ -918,14 +940,17 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/api/mode` | `m=0\|1` | 0 手动 / 1 循迹 |
 | `/api/en` | `chassis=0\|1` `lift=0\|1` | 1 = 锁轴 |
 | `/api/lift` | `v` | 只取符号，速度取 `lift_speed` |
-| `/api/servo` | `ch` `a` | 角度 0~180（按当前协议下发） |
+| `/api/servo` | `ch` `a` | 位置舵机：CH0 逻辑 0~360°、CH8 0~180°（受标定限位）；CH4 连续舵机拒绝 |
 | `/thresh` | `th`（或 `v`） | 阈值 0.0~5.0 V |
 | `/api/line` | `th` `inv` `rev` `kp` `ki` `kd` `om` `accel`（`base` 兼容） | 循迹参数 |
 | `/speed`（别名 `/api/speed`） | `chassis` `lift` | 底盘 800~4800、升降 1600~10000 微步/秒 |
 | `/servo_proto` | `mode=0\|1\|2` | 切换协议并重发三路角度 |
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动 |
 | `/servo_center` | `ch` `a` | 校准中位停止值 |
-| `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
+| `/servo_stop` | `ch` | 连续舵机取消点动并回中位；位置舵机无动作 |
+| `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛（不锁存） |
+| `/api/estop` | — | 急停锁存（立即停脉冲/底盘/升降/舵机，中止比赛） |
+| `/api/estop/clear` | — | 解除急停锁存 |
 | `/settings` | `save=1` | 立即保存调参到 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（见 4.14.2） |
 | `/api/competition/cmd` | `cmd=start\|abort\|resume\|skip\|execute\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | `execute`/`resume` 仅在 `DEBUG_PAUSE` 有效 |
@@ -952,7 +977,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
   "srv":[90,90,90], "srv_ok":1, "proto":0, "ctr":[90,90,90],
   "lift":0, "err":0.00, "ls":0, "zpos":0, "zmove":0,
   "ws":[450,450,450,450],
-  "seq":128, "wifi":1, "ip":"192.168.1.23"
+  "seq":128, "estop":0, "wifi":1, "ip":"192.168.1.23"
 }
 ```
 
@@ -976,6 +1001,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `zmove` | 升降定步运动是否进行中（1/0） |
 | `ws[4]` | RR/RF/LF/LR 目标步频 |
 | `seq` | 采样帧号 |
+| `estop` | 全局急停是否锁存（1/0） |
 | `wifi/ip` | 连接状态 / IP |
 
 #### 4.14.2 `/api/competition` 字段
@@ -1053,6 +1079,24 @@ bool      settings_last_save_ok(void);
   会自动标记保存；**自动比赛配置（competition_config）不在本 blob 内**，
   仍按比赛卡片流程每次确认。
 - 保存值经过各 setter 的限幅与 `isfinite` 检查，损坏/版本不符的 blob 会被忽略。
+
+### 4.16 `safety.h` —— 全局急停
+
+```c
+void safety_init(void);
+void safety_emergency_stop(void);   // 锁存急停
+void safety_clear(void);            // 解除锁存（不自动恢复运动）
+bool safety_is_stopped(void);       // 无锁读取
+```
+
+急停动作：清零底盘/升降指令 → `stepper_abort_all()` 立即停脉冲 →
+若比赛运行中则 `competition_abort()`（停舵机/中止状态机）→
+`lu9685_hold_all()` 取消所有舵机定时器（位置舵机保持当前角度）。
+
+- 锁存期间 `manual_allowed()` / `manual_allowed_or_debug()` 统一返回
+  **423 Locked**，`competition_start()` 返回 `ESP_ERR_INVALID_STATE`。
+- 不改变 EN 电平（避免升降掉件），解除后需重新下发运动命令。
+- 急停若中止了比赛，会作废 Z/盘位零点，重启自动流程前需重新标定零点。
 
 ---
 

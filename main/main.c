@@ -19,6 +19,7 @@
 #include "app_config.h"
 #include "chassis.h"
 #include "competition.h"
+#include "safety.h"
 #include "i2c_bus.h"
 #include "k230_link.h"
 #include "line_follow.h"
@@ -75,6 +76,7 @@ void app_main(void)
     }
 
     line_follow_init();
+    safety_init();
     ESP_ERROR_CHECK(chassis_init());
 
     /* 从 NVS 恢复上次保存的 PID/阈值/速度/舵机校准 */

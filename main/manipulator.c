@@ -59,9 +59,22 @@ void manipulator_init(void)
 
 void manipulator_configure(const manipulator_config_t *config)
 {
-    if (config != NULL && s_status != MANIPULATOR_RUNNING) {
-        s_config = *config;
+    if (config == NULL || s_status == MANIPULATOR_RUNNING) {
+        return;
     }
+    s_config = *config;
+
+    /* 夹爪软限位 = 标定的开/合角度区间，越界命令一律拒绝/夹紧，
+       避免手动或脚本把夹爪压到机械极限。 */
+    uint8_t lo = (config->gripper_open < config->gripper_closed)
+                     ? config->gripper_open : config->gripper_closed;
+    uint8_t hi = (config->gripper_open < config->gripper_closed)
+                     ? config->gripper_closed : config->gripper_open;
+    if (lo < hi) {
+        lu9685_set_limits_deg(LU9685_CH_GRIPPER, (float)lo, (float)hi);
+    }
+    /* 底座最多一圈 360° */
+    lu9685_set_limits_deg(LU9685_CH_BASE, SERVO_BASE_MIN_DEG, SERVO_BASE_MAX_DEG);
 }
 
 esp_err_t manipulator_start(manipulator_operation_t operation)
@@ -104,7 +117,7 @@ static esp_err_t start_servo(uint8_t channel, uint8_t angle, uint16_t settle_ms)
 }
 
 /* CH0 底座是连续旋转舵机：按角度差换算转动时间，到点自动停在中位。 */
-static esp_err_t start_base(uint8_t angle, uint16_t settle_ms)
+static esp_err_t start_base(uint16_t angle, uint16_t settle_ms)
 {
     uint32_t duration = 0;
     esp_err_t err = lu9685_move_timed(LU9685_CH_BASE, angle,
