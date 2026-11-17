@@ -169,11 +169,13 @@ esp_err_t lu9685_init(void)
         s_pulse[i].active = false;
         s_pulse[i].faulted = false;
     }
-    /* CH0 底座：MG996 类位置舵机，逻辑 0~360°，最多一圈 */
+    /* CH0 底座：连续旋转舵机，用“速度角 + 持续时间”定时点动；
+       逻辑行程 0~360°，最多一圈，单次时长受 SERVO_MAX_JOG_MS 限制。 */
+    s_mode[LU9685_CH_BASE] = LU9685_MODE_CONTINUOUS;
     s_travel_deg[LU9685_CH_BASE] = SERVO_BASE_TRAVEL_DEG;
     s_min_deg[LU9685_CH_BASE] = SERVO_BASE_MIN_DEG;
     s_max_deg[LU9685_CH_BASE] = SERVO_BASE_MAX_DEG;
-    s_pos_deg[LU9685_CH_BASE] = 90.0f;
+    s_target[LU9685_CH_BASE] = 90;
     /* CH8 夹爪：位置舵机，软限位随后由机械臂标定的开/合角度收紧 */
     s_travel_deg[LU9685_CH_GRIPPER] = SERVO_GRIPPER_TRAVEL_DEG;
     /* CH4 物料盘：保留连续旋转 + 定时分度 */
@@ -218,7 +220,7 @@ esp_err_t lu9685_init(void)
         return err;
     }
 
-    lu9685_move_deg(LU9685_CH_BASE, 90.0f);          /* 底座 90°（360° 行程中点） */
+    lu9685_set_angle(LU9685_CH_BASE, LU9685_DEFAULT_CENTER);   /* 连续舵机中位停转 */
     lu9685_set_angle(LU9685_CH_TRAY, LU9685_DEFAULT_CENTER);   /* 连续舵机中位停转 */
     lu9685_move_deg(LU9685_CH_GRIPPER, 90.0f);
     ESP_LOGI(TAG, "LU9685 @0x%02X ready", s_addr);
@@ -374,7 +376,13 @@ esp_err_t lu9685_step_deg(uint8_t channel, float delta_deg)
 
 float lu9685_get_pos_deg(uint8_t channel)
 {
-    return (channel < LU9685_MAX_CH) ? s_pos_deg[channel] : 0.0f;
+    if (channel >= LU9685_MAX_CH) {
+        return 0.0f;
+    }
+    if (s_mode[channel] == LU9685_MODE_POSITION) {
+        return s_pos_deg[channel];
+    }
+    return (float)s_target[channel];   /* 连续通道：定时点动累积的逻辑角度 */
 }
 
 esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle)
@@ -410,8 +418,8 @@ esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
     if (speed_angle > 180) {
         speed_angle = 180;
     }
-    if (duration_ms > 60000) {
-        duration_ms = 60000;
+    if (duration_ms > SERVO_MAX_JOG_MS) {
+        duration_ms = SERVO_MAX_JOG_MS;   /* 单次点动硬上限，必须自动停止 */
     }
     uint8_t stop = (stop_angle < 0) ? s_center[channel]
                                    : (uint8_t)((stop_angle > 180) ? 180 : stop_angle);
@@ -444,9 +452,9 @@ esp_err_t lu9685_move_timed(uint8_t channel, uint16_t target_angle,
         }
         return lu9685_move_deg(channel, (float)target_angle);
     }
-    if (target_angle > 180) {
-        target_angle = 180;
-    }
+    /* 连续通道：目标先按软限位夹紧（CH0 0~360°），再按标定的
+       ms_per_180 / speed_angle 换算转动时间；单次时长硬上限 SERVO_MAX_JOG_MS。 */
+    float target = clamp_deg(channel, (float)target_angle);
     if (speed_angle == 0 || speed_angle >= 180) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -456,7 +464,8 @@ esp_err_t lu9685_move_timed(uint8_t channel, uint16_t target_angle,
         ms_per_180 = 60000U;
     }
 
-    int16_t delta = (int16_t)target_angle - (int16_t)s_target[channel];
+    int32_t current = (int32_t)s_target[channel];
+    int32_t delta = (int32_t)lroundf(target) - current;
     if (delta == 0) {
         if (duration_ms_out != NULL) {
             *duration_ms_out = 0;
@@ -464,12 +473,24 @@ esp_err_t lu9685_move_timed(uint8_t channel, uint16_t target_angle,
         return ESP_OK;
     }
     uint32_t steps = (uint32_t)((delta > 0) ? delta : -delta);
+    uint32_t max_steps = (uint32_t)((uint64_t)SERVO_MAX_JOG_MS * 180ULL / ms_per_180);
+    if (max_steps == 0) {
+        max_steps = 1;
+    }
+    if (steps > max_steps) {
+        /* 标定值过小也不允许一次转太久，防止“一直转” */
+        steps = max_steps;
+        delta = (delta > 0) ? (int32_t)steps : -(int32_t)steps;
+    }
     uint32_t duration = (steps * ms_per_180 + 90U) / 180U;   /* 四舍五入 */
+    if (duration > SERVO_MAX_JOG_MS) {
+        duration = SERVO_MAX_JOG_MS;
+    }
     uint8_t run_speed = (delta > 0) ? speed_angle : (uint8_t)(180 - speed_angle);
 
     esp_err_t err = lu9685_pulse_start(channel, run_speed, duration, stop_angle);
     if (err == ESP_OK) {
-        s_target[channel] = target_angle;
+        s_target[channel] = (uint16_t)(current + delta);
     }
     if (duration_ms_out != NULL) {
         *duration_ms_out = duration;

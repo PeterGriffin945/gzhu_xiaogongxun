@@ -134,6 +134,8 @@ extern "C" {
 #define SERVO_BASE_MAX_DEG        360.0f
 #define SERVO_GRIPPER_TRAVEL_DEG  180.0f
 #define SERVO_STEP_DEG_DEFAULT    15.0f
+/* 单次定时点动最长持续时间：无论标定值多大，到点必定停止 */
+#define SERVO_MAX_JOG_MS          10000U
 
 /* ==========================================================================
  * 五、传感器采样

@@ -318,22 +318,30 @@ uint16_t  lu9685_get_target_angle(uint8_t channel);
 esp_err_t lu9685_set_target_angle(uint8_t channel, uint16_t angle); // 声明姿态，不转
 ```
 
-- **通道模式**：CH0 底座、CH8 夹爪默认 `POSITION`（MG996 类）；
-  CH4 物料盘默认 `CONTINUOUS`。位置通道调用 `pulse_start` 一律返回
-  `ESP_ERR_INVALID_STATE`，从根上避免“一直转”。
-- **位置舵机**：`move_deg` 写一次原始角度即到位并保持；所有命令都会先按
-  `set_limits_deg()` 的软限位夹紧。CH0 行程 0~360°（原始 0~180 线性映射）；
-  CH8 行程 0~180°，软限位由 `manipulator_configure()` 按标定的
-  `gripper_open/gripper_closed` 区间自动设置。`step_deg` 用于“一次走 15°”。
+- **通道模式**：CH0 底座、CH4 物料盘默认 `CONTINUOUS`（定时点动）；
+  CH8 夹爪默认 `POSITION`（位置舵机）。位置通道调用 `pulse_start` 一律返回
+  `ESP_ERR_INVALID_STATE`；连续通道调用 `move_deg` 也返回错误，
+  必须走 `move_timed` / `pulse_start`。
+- **CH0 定时点动**：`move_timed(ch, target_deg, speed_angle, ms_per_180, ...)`
+  先把目标按软限位夹紧到 **0~360°**，再按
+  `duration = |目标-当前| × ms_per_180 / 180` 启动定时脉冲，到点自动写回中位停止。
+  单次时长硬上限 `SERVO_MAX_JOG_MS`（默认 10000ms），标定值再大也不会一直转；
+  超出时目标角会被截断到 `SERVO_MAX_JOG_MS` 对应的角度。
+  `speed_angle`（10~170）与 `ms_per_180` 由比赛标定的 `bspeed/bsweep` 提供。
+- **位置舵机（CH8）**：`move_deg` 写一次原始角度即到位并保持；所有命令都会先按
+  `set_limits_deg()` 的软限位夹紧。CH8 行程 0~180°，软限位由
+  `manipulator_configure()` 按标定的 `gripper_open/gripper_closed` 区间自动设置。
 - 板子离线时：`lu9685_available()==false`，写角度返回
   `ESP_ERR_INVALID_STATE`，**不会更新缓存**。
 - `pulse_start`（仅连续通道）先发 `speed_angle`，**后台任务**在 `duration_ms`
-  后自动发停止角；同一通道再次调用会重新计时；`duration_ms` 限幅 60000ms。
+  后自动发停止角；同一通道再次调用会重新计时；`duration_ms` 限幅
+  `SERVO_MAX_JOG_MS`（10000ms）。
 - `pulse_cancel` 对连续通道清除计时并写回中位；对位置通道仅清除计时、不产生动作。
-- 连续舵机（CH4）：`90` 附近停转，偏离越远越快。用 `pulse_start(ch, 60, 500, -1)`
-  即是“正转约半秒”。
+- 连续舵机（CH0/CH4）：`90` 附近停转，偏离越远越快。用
+  `pulse_start(ch, 60, 500, -1)` 即是“正转约半秒”。
 - **`move_timed`**：位置通道等价于 `move_deg(target)`（`duration_ms_out=0`，
-  由调用方用 settle 时间等待）；连续通道按角度差换算持续时间。
+  由调用方用 settle 时间等待）；连续通道先按 0~360° 软限位夹紧目标，
+  再把 `|Δ| × ms_per_180 / 180` 换算成持续时间（上限 10000ms）后点动。
 - 底座姿态声明：开赛时 `competition_start()` 用
   `set_target_angle(CH0, bstow)` 声明当前物理姿态为运输角（不产生动作），
   启动前需人工把底座摆到该角度。
@@ -646,8 +654,8 @@ typedef struct {
     uint8_t gripper_open;       // 夹爪张开角，0~180，且 ≠ closed
     uint8_t gripper_closed;     // 夹爪闭合角，0~180，且 ≠ open
                                 // 两者自动构成夹爪软限位区间
-    uint8_t base_speed_angle;   // 已废弃（底座改为位置控制），保留兼容
-    uint16_t base_sweep_ms;     // 已废弃，保留兼容
+    uint8_t base_speed_angle;   // CH0 定时点动速度角 10~170（<90 正转）
+    uint16_t base_sweep_ms;     // CH0 转 180° 所需时间 200~10000ms（角度标定）
     uint16_t base_settle_ms;    // 底座到位稳定，0~5000ms（建议 600~1200）
     uint16_t gripper_settle_ms; // 夹爪到位稳定，0~5000ms
     float lift_speed_sps;       // Z 定步峰值速度，1600~10000 微步/秒

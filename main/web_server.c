@@ -276,13 +276,24 @@ static esp_err_t servo_handler(httpd_req_t *req)
     }
     esp_err_t err;
     if (ch == LU9685_CH_BASE) {
-        /* CH0 底座：MG996 类位置舵机，a 为逻辑角度 0~360，写一次即到位保持 */
+        /* CH0 底座：连续舵机定时点动。a 为逻辑目标角 0~360，
+           时长 = |a - 当前| × ms_per_180 / 180，到点自动回中位停止。 */
         if (a < 0) {
             a = 0;
         } else if (a > 360) {
             a = 360;
         }
-        err = lu9685_move_deg((uint8_t)ch, (float)a);
+        competition_config_t cfg = { 0 };
+        competition_get_config(&cfg);
+        uint8_t speed = cfg.manipulator.base_speed_angle;
+        uint32_t sweep = cfg.manipulator.base_sweep_ms;
+        if (speed < 10 || speed > 170) {
+            speed = ARM_BASE_SPEED_ANGLE_DEFAULT;
+        }
+        if (sweep < 200 || sweep > 60000U) {
+            sweep = ARM_BASE_SWEEP_MS_DEFAULT;
+        }
+        err = lu9685_move_timed((uint8_t)ch, (uint16_t)a, speed, sweep, -1, NULL);
     } else if (lu9685_get_mode((uint8_t)ch) == LU9685_MODE_CONTINUOUS) {
         /* 连续舵机不能直接写角度，否则会一直转；请用 /servo_pulse 或盘位命令 */
         return send_err(req, "{\"ok\":0,\"msg\":\"continuous servo: use pulse/tray commands\"}");
