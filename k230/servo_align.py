@@ -15,9 +15,9 @@ import math
 import struct
 from machine import UART
 
-from media.sensor import *
-from media.display import *
-from media.media import *
+from media.sensor import Sensor
+from media.display import Display
+from media.media import MediaManager
 
 # ========================= 可调参数 =========================
 UART_PORT = 2            # ATK K230D PORT2 默认 UART(2)，不要改成 1（UART1 是调试口）
@@ -30,6 +30,7 @@ CENTER_Y = 120
 ALIGN_RADIUS = 15        # 仅用于屏幕提示；最终对位由 ESP 的容差与 nudge 决定
 STABLE_FRAMES = 3        # 连续同色帧数达到该值才置 stable
 USE_LCD = False          # False = IDE 虚拟屏（与原型一致）；True = 板载 ST7701 800x480
+SENSOR_ID = None         # None = 自动探测 CSI 0/1/2；也可手动填 0、1、2
 
 MODE_IDLE, MODE_MATERIAL, MODE_RING, MODE_TRAY = 0, 1, 2, 3
 COLOR_UNKNOWN, COLOR_RED, COLOR_GREEN, COLOR_BLUE = 0, 1, 2, 3
@@ -121,11 +122,40 @@ def code_to_color(code):
     return COLOR_UNKNOWN
 
 
-# ========================= 硬件初始化（与原型脚本完全一致） =========================
-sensor = Sensor()
-sensor.reset()
-sensor.set_framesize(Sensor.QVGA)      # 320x240
-sensor.set_pixformat(Sensor.RGB565)
+# ========================= 硬件初始化 =========================
+# 不同 K230 底板的摄像头可能接在 CSI0/1/2 上；固件找不到时会抛
+# "Can not found sensor on 2"。这里按 SENSOR_ID（默认自动）逐路探测，
+# 并把每路的结果打印出来，便于确认摄像头排线/接口。
+def make_sensor(sensor_id):
+    if sensor_id is None:
+        return Sensor()          # 与原型的写法完全一致
+    try:
+        return Sensor(id=sensor_id)
+    except TypeError:
+        # 旧固件只接受位置参数
+        return Sensor(sensor_id)
+
+
+def open_sensor():
+    # None = 先用原型写法 Sensor()，再依次尝试 CSI 0/1/2
+    candidates = (SENSOR_ID,) if SENSOR_ID is not None else (None, 0, 1, 2)
+    last_error = None
+    for sensor_id in candidates:
+        label = "default" if sensor_id is None else ("CSI%d" % sensor_id)
+        try:
+            candidate = make_sensor(sensor_id)
+            candidate.reset()
+            candidate.set_framesize(Sensor.QVGA)      # 320x240
+            candidate.set_pixformat(Sensor.RGB565)
+            print("sensor %s ready" % label)
+            return candidate
+        except Exception as error:
+            last_error = error
+            print("sensor %s not found: %s" % (label, error))
+    raise RuntimeError("camera not found, check ribbon/CSI port: %s" % last_error)
+
+
+sensor = open_sensor()
 
 # 屏幕：默认和原型一样用 IDE 虚拟屏；需要板载 ST7701 时把 USE_LCD 改 True
 if USE_LCD:
@@ -299,4 +329,7 @@ finally:
         Display.deinit()
     except Exception:
         pass
-    MediaManager.deinit()
+    try:
+        MediaManager.deinit()
+    except Exception:
+        pass

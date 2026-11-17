@@ -1191,7 +1191,7 @@ DETECTION payload：
 | `protocol.py` | 帧编码/解码、CRC8、流式 `FrameParser`、`TxSequence`、`build_heartbeat/ack/detection`；不依赖硬件 |
 | `vision.py` | 按颜色分别 `find_blobs`，在 ROI 内选最大有效 blob；连续 3 帧同色才 `stable`；置信度由像素密度与面积计算 |
 | `main.py` | 打开 UART(2)，解析帧；每个合法 COMMAND 清空投票并立即 ACK；每 500ms 发心跳；每 80ms 发 DETECTION；在板载屏显示待机/识别/通信状态 |
-| `servo_align.py` | Gemini 视觉伺服改进版：最大色块 + 画面中心准星 + dx/dy；MATERIAL/RING 分区 ROI；`USE_LCD` 切换板载 ST7701 或 IDE 虚拟屏（相机初始化与原型脚本一致）；UART(2) 上实现与 `main.py` 完全相同的命令/ACK/心跳/检测协议 |
+| `servo_align.py` | Gemini 视觉伺服改进版：最大色块 + 画面中心准星 + dx/dy；MATERIAL/RING 分区 ROI；相机 CSI 自动探测 0/1/2（可用 `SENSOR_ID` 锁定）；`USE_LCD` 切换板载 ST7701 或 IDE 虚拟屏；UART(2) 上实现与 `main.py` 完全相同的命令/ACK/心跳/检测协议 |
 | `from_Gemini.py` | 原始参考脚本，仅作对照：CRC 覆盖了同步字、使用 UART(1)、dx/dy 占用 cx/cy、无周期上报，**不能与当前固件通信** |
 
 约定：
