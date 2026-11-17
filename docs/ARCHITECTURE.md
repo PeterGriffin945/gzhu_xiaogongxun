@@ -19,7 +19,7 @@ ESP32-S3（ESP-IDF 6.1 / FreeRTOS）麦克纳姆轮工程车：
 | C/H 代码 | 约 7.2k 行 |
 | K230 Python | 约 0.6k 行 |
 | 最近构建 | 0 warning / 0 error |
-| 固件 | `0xEBF30`（≈944 KiB），1500K app 分区剩余 38% |
+| 固件 | `0xEC150`（≈944 KiB），1500K app 分区剩余 38% |
 
 ## 2. 目录与分层
 

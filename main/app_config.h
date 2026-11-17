@@ -124,18 +124,24 @@ extern "C" {
 #define ARM_BASE_SPEED_ANGLE_DEFAULT 60
 #define ARM_BASE_SWEEP_MS_DEFAULT    2400U
 
-/* 舵机类型与行程（逻辑角度，MG996 类位置舵机）
- * CH0 底座 20kg：0~360° 位置控制，最大一圈，超出软限位拒绝；
- * CH8 夹爪 20kg：0~180°，软限位由标定的开/合角度自动收紧；
- * CH4 物料盘 SG90：继续用连续旋转 + 定时分度（托盘逻辑依赖）。
+/* 舵机类型与行程（逻辑角度）
+ * CH0 底座 20kg：连续旋转舵机，0~360° 定时点动，只有写 90° 才停；
+ * CH8 夹爪 20kg：位置舵机，0~180°，软限位由标定的开/合角度自动收紧；
+ * CH4 物料盘 SG90：连续旋转 + 定时分度（托盘逻辑依赖）。
  * 每次步进命令默认 15°，可在网页调整。 */
 #define SERVO_BASE_TRAVEL_DEG     360.0f
 #define SERVO_BASE_MIN_DEG        0.0f
 #define SERVO_BASE_MAX_DEG        360.0f
 #define SERVO_GRIPPER_TRAVEL_DEG  180.0f
 #define SERVO_STEP_DEG_DEFAULT    15.0f
-/* 单次定时点动最长持续时间：无论标定值多大，到点必定停止 */
+/* 底座 20kg 连续舵机的停止方式：必须写 90° 才会停，其他角度都是转速 */
+#define SERVO_BASE_STOP_DEG       90U
+/* 单次定时点动最长持续时间：无论标定值多大，到点必定写停止角 */
 #define SERVO_MAX_JOG_MS          10000U
+/* 停止角写入失败/丢失的兜底：成功后补写 N 次，失败则每 500ms 持续重试不停 */
+#define SERVO_STOP_CONFIRM_COUNT  3U
+#define SERVO_STOP_CONFIRM_MS     120U
+#define SERVO_STOP_RETRY_MS       500U
 
 /* ==========================================================================
  * 五、传感器采样

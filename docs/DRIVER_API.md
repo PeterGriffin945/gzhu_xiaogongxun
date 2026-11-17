@@ -334,9 +334,13 @@ esp_err_t lu9685_set_target_angle(uint8_t channel, uint16_t angle); // 声明姿
 - 板子离线时：`lu9685_available()==false`，写角度返回
   `ESP_ERR_INVALID_STATE`，**不会更新缓存**。
 - `pulse_start`（仅连续通道）先发 `speed_angle`，**后台任务**在 `duration_ms`
-  后自动发停止角；同一通道再次调用会重新计时；`duration_ms` 限幅
+  后发停止角；同一通道再次调用会重新计时；`duration_ms` 限幅
   `SERVO_MAX_JOG_MS`（10000ms）。
-- `pulse_cancel` 对连续通道清除计时并写回中位；对位置通道仅清除计时、不产生动作。
+- **CH0 底座停止角固定 90°**（`SERVO_BASE_STOP_DEG`）：无论调用方传什么，
+  位置为 90 才会停；`set_center(CH0, …)` 也会被强制回 90。停止角写成功后
+  后台任务再追加 3 次确认写入；若写失败会置 `pulse_faulted` 并每 500ms 持续
+  重试，**不会放弃等待**。CH4 使用可校准中位（85~95）。
+- `pulse_cancel` 对连续通道清除计时并写回停止角；对位置通道仅清除计时、不产生动作。
 - 连续舵机（CH0/CH4）：`90` 附近停转，偏离越远越快。用
   `pulse_start(ch, 60, 500, -1)` 即是“正转约半秒”。
 - **`move_timed`**：位置通道等价于 `move_deg(target)`（`duration_ms_out=0`，
@@ -954,7 +958,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/speed`（别名 `/api/speed`） | `chassis` `lift` | 底盘 800~4800、升降 1600~10000 微步/秒 |
 | `/servo_proto` | `mode=0\|1\|2` | 切换协议并重发三路角度 |
 | `/servo_pulse` | `ch` `speed_angle` `duration_ms` `stop?` | 360° 舵机定时点动 |
-| `/servo_center` | `ch` `a` | 校准中位停止值 |
+| `/servo_center` | `ch` `a` | 连续通道停止中位；CH0 固定 90°，CH4 可调 85~95 |
 | `/servo_stop` | `ch` | 连续舵机取消点动并回中位；位置舵机无动作 |
 | `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛（不锁存） |
 | `/api/estop` | — | 急停锁存（立即停脉冲/底盘/升降/舵机，中止比赛） |

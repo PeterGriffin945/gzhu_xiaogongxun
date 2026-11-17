@@ -29,6 +29,9 @@ typedef struct {
     uint8_t stop_angle;
     uint8_t retries;
     bool faulted;
+    uint8_t confirm_left;    /* 停止角成功后再补写的次数 */
+    int64_t confirm_us;
+    uint32_t gen;            /* 代次：新命令/取消后丢弃旧的停止写入 */
 } lu9685_pulse_t;
 
 static i2c_master_dev_handle_t s_dev;
@@ -84,6 +87,8 @@ static void clear_pulse(uint8_t channel)
 {
     taskENTER_CRITICAL(&s_pulse_mux);
     s_pulse[channel].active = false;
+    s_pulse[channel].confirm_left = 0;
+    s_pulse[channel].gen++;
     taskEXIT_CRITICAL(&s_pulse_mux);
 }
 
@@ -115,6 +120,15 @@ static float deg_from_raw(uint8_t channel, uint8_t raw)
     return (float)raw * s_travel_deg[channel] / 180.0f;
 }
 
+/* 连续舵机的“停止角”：CH0 底座必须写 90° 才停；其余用校准中位 */
+static uint8_t stop_angle_for(uint8_t channel)
+{
+    if (channel == LU9685_CH_BASE) {
+        return (uint8_t)SERVO_BASE_STOP_DEG;
+    }
+    return s_center[channel];
+}
+
 static void lu9685_pulse_task(void *arg)
 {
     (void)arg;
@@ -123,30 +137,65 @@ static void lu9685_pulse_task(void *arg)
         for (int i = 0; i < LU9685_MAX_CH; ++i) {
             uint8_t stop = 0;
             bool fire = false;
+            uint8_t confirm = 0;
+            uint32_t gen = 0;
+
             taskENTER_CRITICAL(&s_pulse_mux);
             if (s_pulse[i].active && now >= s_pulse[i].deadline_us) {
                 stop = s_pulse[i].stop_angle;
                 fire = true;
+                gen = s_pulse[i].gen;
                 s_pulse[i].active = false;
+            } else if (s_pulse[i].confirm_left > 0 && now >= s_pulse[i].confirm_us) {
+                stop = s_pulse[i].stop_angle;
+                confirm = s_pulse[i].confirm_left;
+                gen = s_pulse[i].gen;
+                s_pulse[i].confirm_left = 0;
             }
             taskEXIT_CRITICAL(&s_pulse_mux);
 
-            if (fire) {
-                esp_err_t err = lu9685_write((uint8_t)i, stop);
-                if (err == ESP_OK) {
-                    s_angles[i] = stop;
-                } else if (s_pulse[i].retries < LU9685_STOP_RETRIES) {
-                    /* 停止写失败时快速有界重试；重试期间仍保留点动记录。 */
-                    s_pulse[i].retries++;
-                    taskENTER_CRITICAL(&s_pulse_mux);
-                    s_pulse[i].active = true;
-                    s_pulse[i].deadline_us = now + 5000;
-                    taskEXIT_CRITICAL(&s_pulse_mux);
-                } else {
-                    s_pulse[i].faulted = true;
-                    ESP_LOGE(TAG, "pulse CH%d stop failed after retries", i);
-                }
+            if (!fire && confirm == 0) {
+                continue;
             }
+            /* 若期间有新命令/取消，旧的停止角作废，不能把新动作刹停 */
+            taskENTER_CRITICAL(&s_pulse_mux);
+            bool valid = (s_pulse[i].gen == gen);
+            taskEXIT_CRITICAL(&s_pulse_mux);
+            if (!valid) {
+                continue;
+            }
+
+            esp_err_t err = lu9685_write((uint8_t)i, stop);
+
+            taskENTER_CRITICAL(&s_pulse_mux);
+            if (s_pulse[i].gen != gen) {
+                /* 写的过程中被新命令接管：不覆盖新状态 */
+                taskEXIT_CRITICAL(&s_pulse_mux);
+                continue;
+            }
+            if (err == ESP_OK) {
+                s_angles[i] = stop;
+                if (fire) {
+                    /* 停止角成功后追加 2~3 次确认写入，防止单次丢包 */
+                    s_pulse[i].confirm_left = SERVO_STOP_CONFIRM_COUNT;
+                    s_pulse[i].confirm_us = now + (int64_t)SERVO_STOP_CONFIRM_MS * 1000;
+                } else if (confirm > 1) {
+                    s_pulse[i].confirm_left = (uint8_t)(confirm - 1);
+                    s_pulse[i].confirm_us = now + (int64_t)SERVO_STOP_CONFIRM_MS * 1000;
+                }
+            } else {
+                /* 停不下来就绝不放弃：标记故障并每 500ms 继续写停止角 */
+                s_pulse[i].faulted = true;
+                if (fire) {
+                    s_pulse[i].active = true;
+                    s_pulse[i].deadline_us = now + (int64_t)SERVO_STOP_RETRY_MS * 1000;
+                } else {
+                    s_pulse[i].confirm_left = confirm;
+                    s_pulse[i].confirm_us = now + (int64_t)SERVO_STOP_RETRY_MS * 1000;
+                }
+                ESP_LOGE(TAG, "pulse CH%d stop write failed, retrying", i);
+            }
+            taskEXIT_CRITICAL(&s_pulse_mux);
         }
         vTaskDelay(pdMS_TO_TICKS(LU9685_PULSE_TICK_MS));
     }
@@ -277,6 +326,20 @@ esp_err_t lu9685_set_angle(uint8_t channel, uint8_t angle)
         /* 只有新角度真正写成功才取消点动定时，否则保留停止定时器，
            避免一次 I2C 失败让连续舵机失去自动停止保护。 */
         clear_pulse(channel);
+        /* 连续舵机被直接写入非停止角时，兜底挂一个最长停止定时：
+           即使调用方忘了计时，也一定会在 SERVO_MAX_JOG_MS 后写回停止角。 */
+        if (angle != stop_angle_for(channel)) {
+            taskENTER_CRITICAL(&s_pulse_mux);
+            if (!s_pulse[channel].active) {
+                s_pulse[channel].deadline_us =
+                    esp_timer_get_time() + (int64_t)SERVO_MAX_JOG_MS * 1000;
+                s_pulse[channel].stop_angle = stop_angle_for(channel);
+                s_pulse[channel].retries = 0;
+                s_pulse[channel].faulted = false;
+                s_pulse[channel].active = true;
+            }
+            taskEXIT_CRITICAL(&s_pulse_mux);
+        }
     }
     return err;
 }
@@ -390,6 +453,11 @@ esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle)
     if (channel >= LU9685_MAX_CH) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (channel == LU9685_CH_BASE) {
+        /* 底座连续舵机只有 90° 会停，禁止校准成其他值 */
+        s_center[channel] = (uint8_t)SERVO_BASE_STOP_DEG;
+        return ESP_OK;
+    }
     if (angle > 180) {
         angle = 180;
     }
@@ -399,7 +467,13 @@ esp_err_t lu9685_set_center(uint8_t channel, uint8_t angle)
 
 uint8_t lu9685_get_center(uint8_t channel)
 {
-    return (channel < LU9685_MAX_CH) ? s_center[channel] : LU9685_DEFAULT_CENTER;
+    if (channel >= LU9685_MAX_CH) {
+        return LU9685_DEFAULT_CENTER;
+    }
+    if (channel == LU9685_CH_BASE) {
+        return (uint8_t)SERVO_BASE_STOP_DEG;
+    }
+    return s_center[channel];
 }
 
 esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
@@ -421,8 +495,14 @@ esp_err_t lu9685_pulse_start(uint8_t channel, uint8_t speed_angle,
     if (duration_ms > SERVO_MAX_JOG_MS) {
         duration_ms = SERVO_MAX_JOG_MS;   /* 单次点动硬上限，必须自动停止 */
     }
-    uint8_t stop = (stop_angle < 0) ? s_center[channel]
-                                   : (uint8_t)((stop_angle > 180) ? 180 : stop_angle);
+    /* 底座无论调用方传什么，停止角一律 90°；其他连续通道用校准中位 */
+    uint8_t stop;
+    if (channel == LU9685_CH_BASE) {
+        stop = (uint8_t)SERVO_BASE_STOP_DEG;
+    } else {
+        stop = (stop_angle < 0) ? s_center[channel]
+                                : (uint8_t)((stop_angle > 180) ? 180 : stop_angle);
+    }
 
     esp_err_t err = lu9685_set_angle(channel, speed_angle);
     if (err != ESP_OK) {
@@ -537,11 +617,18 @@ esp_err_t lu9685_pulse_cancel(uint8_t channel)
     if (s_dev == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = lu9685_write(channel, s_center[channel]);
+    uint8_t stop = stop_angle_for(channel);
+    esp_err_t err = lu9685_write(channel, stop);
+    taskENTER_CRITICAL(&s_pulse_mux);
+    s_pulse[channel].stop_angle = stop;
+    s_pulse[channel].faulted = (err != ESP_OK);
+    /* 一次成功也再补写几次；失败则持续重试，确保“停不下来”不会发生 */
+    s_pulse[channel].confirm_left = SERVO_STOP_CONFIRM_COUNT;
+    s_pulse[channel].confirm_us = esp_timer_get_time() +
+        (int64_t)((err == ESP_OK) ? SERVO_STOP_CONFIRM_MS : SERVO_STOP_RETRY_MS) * 1000;
+    taskEXIT_CRITICAL(&s_pulse_mux);
     if (err == ESP_OK) {
-        s_angles[channel] = s_center[channel];
-    } else {
-        s_pulse[channel].faulted = true;
+        s_angles[channel] = stop;
     }
     return err;
 }
@@ -569,10 +656,13 @@ void lu9685_pulse_stop_all(void)
     }
 }
 
-/* 位置舵机保持当前位置（急停用）：仅取消任何定时器，不产生新动作。 */
+/* 位置舵机保持当前位置（急停用）：仅取消定时器，不产生新动作。
+   连续通道的停止角补写/重试必须保留，否则急停时可能停不下来。 */
 void lu9685_hold_all(void)
 {
     for (int i = 0; i < LU9685_MAX_CH; ++i) {
-        clear_pulse((uint8_t)i);
+        if (s_mode[i] == LU9685_MODE_POSITION) {
+            clear_pulse((uint8_t)i);
+        }
     }
 }
