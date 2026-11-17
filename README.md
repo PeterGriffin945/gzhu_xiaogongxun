@@ -20,8 +20,10 @@ helloworld/
 ├── k230/                       # K230D / CanMV 视觉端
 │   ├── config.py               # UART、心跳、检测周期、LAB 阈值、ROI
 │   ├── main.py                 # 主循环：收命令、ACK、心跳、检测上报、屏幕状态
+│   ├── servo_align.py          # ★ Gemini 视觉伺服改进版：ROI 分模式 + 屏幕自适应 + 同协议
 │   ├── protocol.py             # A5 5A 帧编解码、CRC8、流式解析、发送序号
-│   └── vision.py               # blob 识别、颜色投票、置信度
+│   ├── vision.py               # blob 识别、颜色投票、置信度
+│   └── from_Gemini.py          # 原始 Gemini 参考脚本（协议未适配，仅供对照）
 └── main/
     ├── CMakeLists.txt          # 组件源文件与依赖
     ├── main.c                  # 启动流程、任务初始化、健康检查
@@ -147,6 +149,16 @@ mode, color, flags, cx_lo, cx_hi, cy_lo, cy_hi, area_lo, area_hi, confidence, re
   `stable` 强制为 false。
 - K230 在 `DEBUG_UART_LOG=False` 时不会向协议 UART 写任何文本；**正常比赛必须保持关闭**，
   否则 `K230 ...` 文本会污染二进制帧解析。
+
+**K230 端脚本选择**：
+
+| 文件 | 用途 |
+|---|---|
+| `k230/main.py` | 工程默认视觉节点：模式状态屏幕、心跳、检测上报 |
+| `k230/servo_align.py` | Gemini 视觉伺服改进版：保留"最大色块 + 画面中心准星 + dx/dy"算法，新增 MATERIAL/RING 分区 ROI、ST7701/VIRT 屏幕自适应、完整命令/ACK/心跳协议 |
+| `k230/from_Gemini.py` | 原始参考脚本，CRC 覆盖范围与串口均未适配，**不要直接用于比赛** |
+
+`servo_align.py` 与 `main.py` 任选其一运行，二者不会同时运行（同一 UART2）。
 
 ---
 
