@@ -31,6 +31,7 @@ ALIGN_RADIUS = 15        # 仅用于屏幕提示；最终对位由 ESP 的容差
 STABLE_FRAMES = 3        # 连续同色帧数达到该值才置 stable
 USE_LCD = False          # False = IDE 虚拟屏（与原型一致）；True = 板载 ST7701 800x480
 SENSOR_ID = None         # None = 自动探测 CSI 0/1/2；也可手动填 0、1、2
+STRICT_ROI = False       # True = 只认 ROI 内色块；False = ROI 无目标时回退全图
 
 MODE_IDLE, MODE_MATERIAL, MODE_RING, MODE_TRAY = 0, 1, 2, 3
 COLOR_UNKNOWN, COLOR_RED, COLOR_GREEN, COLOR_BLUE = 0, 1, 2, 3
@@ -45,7 +46,7 @@ PROFILES = {
 
 # LAB 阈值 (L_min, L_max, A_min, A_max, B_min, B_max)，必须按现场光照重标
 THRESHOLDS = [
-    (41, 99, -28, 24, 24, 91),     # 0: 红色
+    (16, 69, -6, 48, 12, 127),     # 0: 红色
     (30, 80, -60, -15, 5, 50),     # 1: 绿色
     (20, 70, -10, 30, -60, -10),   # 2: 蓝色
 ]
@@ -120,6 +121,27 @@ def code_to_color(code):
     if code & 0x04:
         return COLOR_BLUE
     return COLOR_UNKNOWN
+
+
+def detect_blobs(img, profile, use_roi):
+    """优先 ROI 检测；固件不支持 roi 关键字时退回全图。"""
+    if use_roi:
+        try:
+            return img.find_blobs(
+                THRESHOLDS,
+                roi=profile["roi"],
+                pixels_threshold=profile["min_pixels"],
+                area_threshold=profile["min_area"],
+                merge=True,
+            )
+        except Exception:
+            pass
+    return img.find_blobs(
+        THRESHOLDS,
+        pixels_threshold=profile["min_pixels"],
+        area_threshold=profile["min_area"],
+        merge=True,
+    )
 
 
 # ========================= 硬件初始化 =========================
@@ -234,24 +256,18 @@ try:
                        size=8, thickness=1)
 
         profile = PROFILES.get(mode)
+        preview = False
+        if profile is None and mode == MODE_IDLE:
+            # 待机时也按 MATERIAL 做一次预览检测：方便离开比赛流程时
+            # 在屏幕上确认阈值/ROI/摄像头是否正常；但上报仍是 detected=0。
+            profile = PROFILES[MODE_MATERIAL]
+            preview = True
         blobs = []
         if profile is not None:
-            try:
-                blobs = img.find_blobs(
-                    THRESHOLDS,
-                    roi=profile["roi"],
-                    pixels_threshold=profile["min_pixels"],
-                    area_threshold=profile["min_area"],
-                    merge=True,
-                )
-            except Exception:
-                # 个别固件不支持 roi 关键字时退回全图检测
-                blobs = img.find_blobs(
-                    THRESHOLDS,
-                    pixels_threshold=profile["min_pixels"],
-                    area_threshold=profile["min_area"],
-                    merge=True,
-                )
+            blobs = detect_blobs(img, profile, True)
+            if not blobs and not STRICT_ROI:
+                # 物料跑到 ROI 外时仍能看见；比赛时建议 STRICT_ROI=True
+                blobs = detect_blobs(img, profile, False)
 
         blob = max(blobs, key=lambda b: b.pixels()) if blobs else None
         detected = blob is not None
@@ -283,6 +299,9 @@ try:
         if detected and w > 0 and h > 0:
             confidence = max(1, min(100, blob.pixels() * 100 // (w * h)))
 
+        # 预览结果只上屏，不当作 ESP 的识别结果上报
+        report = detected and not preview
+
         # 4. 屏幕提示（保留原脚本的准星 / 连线 / 状态文本）
         if detected:
             name, ui_color = COLOR_STYLES.get(color, ("UNKNOWN", (255, 255, 255)))
@@ -291,16 +310,22 @@ try:
             img.draw_cross(cx, cy, color=ui_color, size=6)
             img.draw_line(CENTER_X, CENTER_Y, cx, cy,
                           color=(255, 255, 0), thickness=1)
-            img.draw_string_advanced(5, 5, 20, "MODE %d  %s" % (mode, name),
+            img.draw_string_advanced(5, 5, 20,
+                                     "MODE %d%s  %s" % (mode, " PREVIEW" if preview else "", name),
                                      color=ui_color)
-            img.draw_string_advanced(5, 30, 20, "dx:%d dy:%d" % (dx, dy),
+            img.draw_string_advanced(5, 30, 20,
+                                     "dx:%d dy:%d a:%d" % (dx, dy, area),
                                      color=(255, 255, 0))
             img.draw_string_advanced(5, 55, 20,
                                      "ALIGNED" if aligned else "ALIGNING...",
                                      color=(0, 255, 0) if aligned else (255, 165, 0))
         else:
-            img.draw_string_advanced(5, 5, 20, "MODE %d  NO TARGET" % mode,
+            img.draw_string_advanced(5, 5, 20,
+                                     "MODE %d  NO TARGET (%d blobs)" % (mode, len(blobs)),
                                      color=(200, 200, 200))
+            img.draw_string_advanced(5, 30, 16,
+                                     "check THRESHOLDS / ROI / min_area",
+                                     color=(150, 150, 150))
         img.draw_string_advanced(5, 80, 16,
                                  "ROI %s" % ("MATERIAL" if mode == MODE_MATERIAL else
                                              ("RING" if mode == MODE_RING else "IDLE")),
@@ -308,9 +333,12 @@ try:
 
         # 5. 周期上报：无目标也发 detected=0，保证 ESP 链路在线
         if time.ticks_diff(now, last_det) >= DETECTION_MS:
-            flags = (1 if detected else 0) | (2 if stable else 0)
-            payload = struct.pack("<BBBHHHBB", mode, color, flags,
-                                  cx, cy, area, confidence, 0)
+            flags = (1 if report else 0) | (2 if (stable and report) else 0)
+            payload = struct.pack("<BBBHHHBB", mode,
+                                  color if report else COLOR_UNKNOWN, flags,
+                                  cx if report else 0, cy if report else 0,
+                                  area if report else 0,
+                                  confidence if report else 0, 0)
             uart_send(build_frame(TYPE_DETECTION, det_seq, payload))
             det_seq = (det_seq + 1) & 0xFF
             last_det = now
