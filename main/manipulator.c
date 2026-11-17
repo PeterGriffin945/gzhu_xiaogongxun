@@ -66,10 +66,19 @@ void manipulator_configure(const manipulator_config_t *config)
 
     /* 夹爪软限位 = 标定的开/合角度区间，越界命令一律拒绝/夹紧，
        避免手动或脚本把夹爪压到机械极限。 */
-    uint8_t lo = (config->gripper_open < config->gripper_closed)
-                     ? config->gripper_open : config->gripper_closed;
-    uint8_t hi = (config->gripper_open < config->gripper_closed)
-                     ? config->gripper_closed : config->gripper_open;
+    int lo = (config->gripper_open < config->gripper_closed)
+                 ? config->gripper_open : config->gripper_closed;
+    int hi = (config->gripper_open < config->gripper_closed)
+                 ? config->gripper_closed : config->gripper_open;
+    /* 留 10° 示教余量，方便把夹爪摆到新的开/合位置再记录 */
+    lo -= 10;
+    hi += 10;
+    if (lo < 0) {
+        lo = 0;
+    }
+    if (hi > 180) {
+        hi = 180;
+    }
     if (lo < hi) {
         lu9685_set_limits_deg(LU9685_CH_GRIPPER, (float)lo, (float)hi);
     }

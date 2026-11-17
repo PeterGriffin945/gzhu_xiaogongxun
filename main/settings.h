@@ -9,6 +9,8 @@
 
 #include "esp_err.h"
 
+#include "competition.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,6 +26,15 @@ esp_err_t settings_save_now(void);
 
 /** 最近一次保存是否成功（供状态/日志使用） */
 bool settings_last_save_ok(void);
+
+/**
+ * @brief 保存/读取机械臂与舵机标定（competition_config_t）
+ *
+ * 包含底座各动作角度、夹爪开/合角度、各步骤 Z 高度、速度角/行程、
+ * 横线参数与确认状态。上电时由 main 调回并应用，动作脚本直接使用。
+ */
+esp_err_t settings_save_competition(const competition_config_t *config, bool confirmed);
+esp_err_t settings_load_competition(competition_config_t *config, bool *confirmed);
 
 #ifdef __cplusplus
 }

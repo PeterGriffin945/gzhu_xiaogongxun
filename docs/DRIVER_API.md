@@ -962,7 +962,8 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/settings` | `save=1` | 立即保存调参到 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（见 4.14.2） |
 | `/api/competition/cmd` | `cmd=start\|abort\|resume\|skip\|execute\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | `execute`/`resume` 仅在 `DEBUG_PAUSE` 有效 |
-| `/api/competition/config` | 见 4.12.1 的字段名；`confirm=1` 同时确认 | 保存/确认标定 |
+| `/api/competition/config` | 见 4.12.1 的字段名；`confirm=1` 同时确认 | 保存/确认标定（自动写 Flash） |
+| `/api/competition/teach` | `step=bstow\|bpick\|btray\|bplace\|gopen\|gclose\|zpick\|ztray\|zplace` | 记录当前姿态到该步骤并写 Flash |
 | `/favicon.ico` | — | 204 |
 
 说明：
@@ -1087,6 +1088,20 @@ bool      settings_last_save_ok(void);
   会自动标记保存；**自动比赛配置（competition_config）不在本 blob 内**，
   仍按比赛卡片流程每次确认。
 - 保存值经过各 setter 的限幅与 `isfinite` 检查，损坏/版本不符的 blob 会被忽略。
+
+**机械臂/舵机标定**单独保存在同一命名空间的 `comp` 键：
+
+```c
+esp_err_t settings_save_competition(const competition_config_t *config, bool confirmed);
+esp_err_t settings_load_competition(competition_config_t *config, bool *confirmed);
+```
+
+- 内容：底座各动作角（0~360）、夹爪开/合角、各步骤 Z 高度、`bspeed/bsweep`、
+  `bms/gms`、视觉/横线参数与确认状态。
+- `main()` 在 `competition_init()` 之后调用加载并 `competition_set_config()`，
+  动作脚本下次上电直接使用，无需重填。
+- `/api/competition/config`、`confirm`、`teach` 成功后都会自动写该 blob。
+- 版本/magic/size 不匹配会被忽略（保留默认值）。
 
 ### 4.16 `safety.h` —— 全局急停
 

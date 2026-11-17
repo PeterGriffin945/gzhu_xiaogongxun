@@ -565,6 +565,11 @@ static esp_err_t competition_command_handler(httpd_req_t *req)
         err = competition_set_z_zero();
     } else if (strcmp(command, "confirm") == 0) {
         err = competition_confirm_config();
+        if (err == ESP_OK) {
+            competition_config_t cfg = { 0 };
+            competition_get_config(&cfg);
+            settings_save_competition(&cfg, true);
+        }
     } else if (strcmp(command, "resume") == 0 || strcmp(command, "skip") == 0) {
         err = competition_debug_resume();
     } else if (strcmp(command, "execute") == 0) {
@@ -648,7 +653,86 @@ static esp_err_t competition_config_handler(httpd_req_t *req)
         return send_err(req, "{\"ok\":0,\"msg\":\"no recognized config fields\"}");
     }
     esp_err_t err = competition_set_config(&cfg, confirm != 0);
+    if (err == ESP_OK) {
+        /* 标定值持久化：下次上电直接恢复，动作脚本无需重填 */
+        settings_save_competition(&cfg, confirm != 0);
+    }
     return (err == ESP_OK) ? send_ok(req) : send_err(req, "{\"ok\":0,\"msg\":\"invalid calibration values\"}");
+}
+
+/* 示教：记录当前底座/夹爪/升降姿态到对应动作步骤，并立即持久化 */
+static esp_err_t competition_teach_handler(httpd_req_t *req)
+{
+    if (!manual_allowed_or_debug(req)) {
+        return ESP_OK;
+    }
+    char step[24];
+    if (!query_value(req, "step", step, sizeof(step))) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"step required\"}");
+    }
+
+    competition_config_t cfg = { 0 };
+    competition_get_config(&cfg);
+    competition_status_t st = { 0 };
+    competition_get_status(&st);
+
+    long value = 0;
+    bool known = true;
+    if (strcmp(step, "bstow") == 0) {
+        value = lroundf(lu9685_get_pos_deg(LU9685_CH_BASE));
+        cfg.manipulator.base_stow = (uint16_t)value;
+    } else if (strcmp(step, "bpick") == 0) {
+        value = lroundf(lu9685_get_pos_deg(LU9685_CH_BASE));
+        cfg.manipulator.base_pick = (uint16_t)value;
+    } else if (strcmp(step, "btray") == 0) {
+        value = lroundf(lu9685_get_pos_deg(LU9685_CH_BASE));
+        cfg.manipulator.base_tray = (uint16_t)value;
+    } else if (strcmp(step, "bplace") == 0) {
+        value = lroundf(lu9685_get_pos_deg(LU9685_CH_BASE));
+        cfg.manipulator.base_place = (uint16_t)value;
+    } else if (strcmp(step, "gopen") == 0) {
+        value = lroundf(lu9685_get_pos_deg(LU9685_CH_GRIPPER));
+        cfg.manipulator.gripper_open = (uint8_t)value;
+    } else if (strcmp(step, "gclose") == 0) {
+        value = lroundf(lu9685_get_pos_deg(LU9685_CH_GRIPPER));
+        cfg.manipulator.gripper_closed = (uint8_t)value;
+    } else if (strcmp(step, "zpick") == 0) {
+        value = stepper_get_position(AXIS_LIFT);
+        if (value < 0) {
+            value = 0;
+        }
+        cfg.manipulator.z_ground_pick = (int32_t)value;
+    } else if (strcmp(step, "ztray") == 0) {
+        value = stepper_get_position(AXIS_LIFT);
+        if (value < 0) {
+            value = 0;
+        }
+        cfg.manipulator.z_tray = (int32_t)value;
+    } else if (strcmp(step, "zplace") == 0) {
+        value = stepper_get_position(AXIS_LIFT);
+        if (value < 0) {
+            value = 0;
+        }
+        cfg.manipulator.z_ground_place = (int32_t)value;
+    } else {
+        known = false;
+    }
+
+    if (!known) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"unknown step\"}");
+    }
+    esp_err_t err = competition_set_config(&cfg, st.config_confirmed);
+    if (err != ESP_OK) {
+        return send_err(req, "{\"ok\":0,\"msg\":\"teach rejected (running/tray busy/invalid)\"}");
+    }
+    settings_save_competition(&cfg, st.config_confirmed);
+
+    char buf[96];
+    int n = snprintf(buf, sizeof(buf), "{\"ok\":1,\"step\":\"%s\",\"value\":%ld}",
+                     step, value);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, buf, n);
 }
 
 esp_err_t web_server_start(void)
@@ -690,6 +774,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/competition", .method = HTTP_GET, .handler = competition_status_handler },
         { .uri = "/api/competition/cmd", .method = HTTP_GET, .handler = competition_command_handler },
         { .uri = "/api/competition/config", .method = HTTP_GET, .handler = competition_config_handler },
+        { .uri = "/api/competition/teach", .method = HTTP_GET, .handler = competition_teach_handler },
         { .uri = "/settings", .method = HTTP_GET, .handler = settings_handler },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); ++i) {

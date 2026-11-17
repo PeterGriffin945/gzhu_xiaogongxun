@@ -23,7 +23,10 @@
 
 #define SETTINGS_NAMESPACE "tuning"
 #define SETTINGS_KEY       "blob"
+#define SETTINGS_COMP_KEY  "comp"
 #define SETTINGS_MAGIC     0x54554E45U   /* 'TUNE' */
+#define COMP_SETTINGS_MAGIC 0x434F4D50U  /* 'COMP' */
+#define COMP_SETTINGS_VERSION 1
 /* v2：速度/加速度单位从整步改为 1/16 微步，旧值必须丢弃后按新默认重来 */
 #define SETTINGS_VERSION   2
 #define SETTINGS_DEBOUNCE_US (2 * 1000 * 1000)
@@ -48,6 +51,16 @@ typedef struct {
     uint8_t center[3];      /* CH0 / CH4 / CH8 */
     uint8_t reserved[9];
 } settings_blob_t;
+
+/* 机械臂/舵机标定：所有动作步骤共用同一份配置，整体保存/读取 */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint8_t confirmed;
+    uint8_t reserved[3];
+    competition_config_t config;
+} competition_blob_t;
 
 static SemaphoreHandle_t s_mutex;
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -231,4 +244,79 @@ esp_err_t settings_init(void)
     BaseType_t ret = xTaskCreatePinnedToCore(settings_task, "settings", 4096,
                                              NULL, 2, NULL, 0);
     return (ret == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+esp_err_t settings_save_competition(const competition_config_t *config, bool confirmed)
+{
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    competition_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.magic = COMP_SETTINGS_MAGIC;
+    blob.version = COMP_SETTINGS_VERSION;
+    blob.size = (uint16_t)sizeof(blob);
+    blob.confirmed = confirmed ? 1 : 0;
+    blob.config = *config;
+
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(SETTINGS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(handle, SETTINGS_COMP_KEY, &blob, sizeof(blob));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    if (handle != 0) {
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "saved arm config: bstow=%u bpick=%u btray=%u bplace=%u "
+                      "gopen=%u gclose=%u zpick=%ld",
+                 (unsigned)blob.config.manipulator.base_stow,
+                 (unsigned)blob.config.manipulator.base_pick,
+                 (unsigned)blob.config.manipulator.base_tray,
+                 (unsigned)blob.config.manipulator.base_place,
+                 (unsigned)blob.config.manipulator.gripper_open,
+                 (unsigned)blob.config.manipulator.gripper_closed,
+                 (long)blob.config.manipulator.z_ground_pick);
+    } else {
+        ESP_LOGW(TAG, "save arm config failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t settings_load_competition(competition_config_t *config, bool *confirmed)
+{
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(SETTINGS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    competition_blob_t blob;
+    size_t length = sizeof(blob);
+    err = nvs_get_blob(handle, SETTINGS_COMP_KEY, &blob, &length);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (length != sizeof(blob) || blob.magic != COMP_SETTINGS_MAGIC ||
+        blob.version != COMP_SETTINGS_VERSION) {
+        ESP_LOGW(TAG, "arm config ignored (len=%u ver=%u)", (unsigned)length,
+                 (unsigned)blob.version);
+        return ESP_ERR_INVALID_STATE;
+    }
+    *config = blob.config;
+    if (confirmed != NULL) {
+        *confirmed = (blob.confirmed != 0);
+    }
+    ESP_LOGI(TAG, "loaded arm config: bstow=%u bpick=%u gopen=%u gclose=%u",
+             (unsigned)config->manipulator.base_stow,
+             (unsigned)config->manipulator.base_pick,
+             (unsigned)config->manipulator.gripper_open,
+             (unsigned)config->manipulator.gripper_closed);
+    return ESP_OK;
 }

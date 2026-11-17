@@ -3,7 +3,7 @@
 基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xEB3E0（963552 字节，约 941 KiB），2MB Flash 的 1500K app 分区剩余 38%。
+> 固件 0xEBF30（966448 字节，约 944 KiB），2MB Flash 的 1500K app 分区剩余 38%。
 
 ---
 
@@ -414,7 +414,11 @@ idf.py -p COM18 flash monitor
 - **阈值 4.00~5.00V（步进 0.01V）/ 极性 / PID / 加速度**：实时生效。
 - **参数保存**：PID、阈值、极性、探头顺序、加速度、底盘/升降速度、舵机协议与
   中位校准修改后约 **2 秒自动写入 NVS**；也可点 PID 卡片里的“立即保存到 Flash”。
-  下次上电自动加载，不必重新调参。
+  **机械臂/舵机标定**（底座各动作角、夹爪开/合、每一步 Z 高度、速度角/行程、
+  横线参数）在“保存并确认本次标定”时整体写入 Flash，上电自动恢复。
+- **示教保存**：手动把底座/夹爪/升降摆到目标位置后，在比赛卡片选择“示教步骤”
+  并点 **“保存当前姿态到该步骤”**，程序读取当前角度/Z 步数写入对应动作并立即
+  存 Flash；配合“执行抓取/放置”可逐步调整每一段动作。
 
 ### 7.1 比赛卡片使用顺序
 
@@ -468,7 +472,8 @@ idf.py -p COM18 flash monitor
 | `/settings` | `save=1` | 立即把 PID/阈值/速度/舵机校准写入 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（状态机、零点、K230、视觉、标定） |
 | `/api/competition/cmd` | `cmd=start\|abort\|resume\|skip\|execute\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | `execute`/`resume` 仅在 `DEBUG_PAUSE` 有效 |
-| `/api/competition/config` | `zpick ztray zplace zmax bstow bpick btray bplace gopen gclose bms gms lsps mcx mcy rcx rcy tol minconf maxiter xsign ysign nudge asps tspeed tms sblack sconfirm sclear srearm sinterval`，可选 `confirm=1` | 保存标定并可选确认 |
+| `/api/competition/config` | `zpick ztray zplace zmax bstow bpick btray bplace gopen gclose bms gms lsps mcx mcy rcx rcy tol minconf maxiter xsign ysign nudge asps tspeed tms sblack sconfirm sclear srearm sinterval`，可选 `confirm=1` | 保存标定并可选确认（自动写 Flash） |
+| `/api/competition/teach` | `step=bstow\|bpick\|btray\|bplace\|gopen\|gclose\|zpick\|ztray\|zplace` | 把当前底座角度/夹爪角度/升降位置记录到该步骤并写 Flash |
 
 示例：
 

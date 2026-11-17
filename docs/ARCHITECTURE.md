@@ -19,7 +19,7 @@ ESP32-S3（ESP-IDF 6.1 / FreeRTOS）麦克纳姆轮工程车：
 | C/H 代码 | 约 7.2k 行 |
 | K230 Python | 约 0.6k 行 |
 | 最近构建 | 0 warning / 0 error |
-| 固件 | `0xEB3E0`（≈941 KiB），1500K app 分区剩余 38% |
+| 固件 | `0xEBF30`（≈944 KiB），1500K app 分区剩余 38% |
 
 ## 2. 目录与分层
 
@@ -53,7 +53,7 @@ main/
 │  ├── wifi_sta.c         # STA 连接 + 扫描诊断 + AP 兜底热点
 │  ├── web_server.c       # 19 个 HTTP GET 接口
 │  ├── web_page.h         # 内嵌单页控制台（HTML/CSS/JS）
-│  ├── settings.c/.h      # NVS 持久化（PID/阈值/速度/舵机校准）
+│  ├── settings.c/.h      # NVS 持久化（PID/阈值/速度/舵机校准/机械臂示教标定）
 │  └── safety.c/.h        # 全局急停锁存 / 解除
 │
 k230/                     # CanMV 端：config / protocol / vision / main
@@ -129,6 +129,10 @@ TRAVEL ──横线──► DEBUG_PAUSE
 暂停期间 HTTP 放行 `/api/move`、`/api/lift`、`/api/servo` 以及物料盘分度；
 人工对位后由 `execute` 启动既有动作脚本，全程不依赖 K230。跳过时底盘前移
 `DEBUG_RESUME_CROSS_STEPS`（1500 微步 ≈ 96mm），并重置/重新武装站点检测。
+
+示教：暂停时手动把底座/夹爪/升降摆到目标位置，选择步骤并调用
+`/api/competition/teach?step=...`，当前角度/Z 位置写入该动作步骤并立即存 NVS
+（`tuning/comp`）；标定整体在 `competition_init()` 后自动恢复。
 
 启动前置条件：配置已确认、Z 零点有效、盘位零点有效、两路 EN 已打开、
 所有执行器静止；**不要求 K230 在线**。

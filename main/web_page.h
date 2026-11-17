@@ -301,6 +301,24 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <button id="compExecute" class="primary" style="flex:1 1 100%;padding:14px;font-size:15px" disabled>▶ 执行抓取</button>
       <button id="compResume" class="primary" style="flex:1 1 100%;padding:12px;font-size:14px" disabled>跳过本站 / 恢复循迹</button>
     </div>
+    <div class="row" style="margin:8px 0">
+      <label>示教步骤</label>
+      <select id="teachStep">
+        <option value="bstow">底座运输角</option>
+        <option value="bpick">底座地面抓取角</option>
+        <option value="btray">底座盘位角</option>
+        <option value="bplace">底座靶环角</option>
+        <option value="gopen">夹爪张开角</option>
+        <option value="gclose">夹爪闭合角</option>
+        <option value="zpick">地面抓取 Z</option>
+        <option value="ztray">盘内取放 Z</option>
+        <option value="zplace">靶环放置 Z</option>
+      </select>
+    </div>
+    <div class="btnrow">
+      <button id="teachSave" class="primary" style="flex:1 1 100%;padding:12px">📌 保存当前姿态到该步骤（含 Flash）</button>
+    </div>
+    <div class="statusline" id="teachMsg" style="margin-top:6px;color:var(--ok)"></div>
     <div class="slots" id="compSlots"></div>
     <div class="btnrow">
       <button id="zZero">设当前 Z 为运输零点</button>
@@ -782,6 +800,14 @@ $("compResume").onclick = () => {
 };
 $("compExecute").onclick = () => {
   compCommand("/api/competition/cmd?cmd=execute", "已开始执行本站动作，请勿手动干预");
+};
+$("teachSave").onclick = async () => {
+  const step = $("teachStep").value;
+  const j = await api(`/api/competition/teach?step=${step}`);
+  $("teachMsg").textContent = j.ok
+    ? `已记录 ${step} = ${j.value}（已写入 Flash）`
+    : (j.msg || "示教失败：请先停止运动");
+  await pollComp();
 };
 $("zZero").onclick = () => {
   if (window.confirm("确认当前 Z 滑块处于运输安全零点？")) {

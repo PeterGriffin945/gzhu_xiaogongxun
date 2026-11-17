@@ -822,7 +822,8 @@ esp_err_t competition_set_config(const competition_config_t *config, bool confir
         return ESP_ERR_TIMEOUT;
     }
     esp_err_t result = ESP_OK;
-    if (s_running || tray_controller_busy()) {
+    /* 调试暂停时允许“示教/改参数”：此时执行器静止，apply_config 安全 */
+    if ((s_running && s_state != COMPETITION_DEBUG_PAUSE) || tray_controller_busy()) {
         result = ESP_ERR_INVALID_STATE;
     } else {
         s_config = *config;
@@ -839,7 +840,8 @@ esp_err_t competition_confirm_config(void)
         return ESP_ERR_TIMEOUT;
     }
     esp_err_t result = ESP_OK;
-    if (s_running || !valid_config(&s_config)) {
+    if ((s_running && s_state != COMPETITION_DEBUG_PAUSE) ||
+        !valid_config(&s_config)) {
         result = ESP_ERR_INVALID_STATE;
     } else {
         s_config_confirmed = true;

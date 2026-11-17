@@ -90,6 +90,15 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(competition_init());
 
+    /* 恢复上次保存的机械臂/舵机标定（角度、Z 步数、开合、速度角等） */
+    competition_config_t saved_cfg;
+    bool saved_confirmed = false;
+    if (settings_load_competition(&saved_cfg, &saved_confirmed) == ESP_OK) {
+        if (competition_set_config(&saved_cfg, saved_confirmed) != ESP_OK) {
+            ESP_LOGW(TAG, "saved arm config rejected, using defaults");
+        }
+    }
+
     /* Wi-Fi 与 Web 控制台：Wi-Fi 初始化失败不要重启，保留串口日志便于定位 */
     if (wifi_sta_init() != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi init failed; serial console remains available");
