@@ -80,6 +80,11 @@ padding:6px 8px;font-family:inherit;font-size:12px;outline:none;max-width:62%}
 .badge.ok{background:rgba(34,197,94,.15);color:#5ee08a}
 .badge.bad{background:rgba(239,68,68,.15);color:#fca5a5}
 .badge.warn{background:rgba(245,158,11,.15);color:#fbbf24}
+.pausebanner{display:none;margin:8px 0;padding:10px 12px;border-radius:10px;
+background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.55);
+color:#fbbf24;font-size:13px;font-weight:600;line-height:1.5;
+animation:pausepulse 1.2s ease-in-out infinite}
+@keyframes pausepulse{0%,100%{box-shadow:0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 14px rgba(245,158,11,.45)}}
 .wheels{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-top:6px}
 .wheel{background:#0b141d;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11px;color:var(--dim)}
 .wheel b{float:right;color:#cfe3f5;font-weight:500;font-variant-numeric:tabular-nums}
@@ -269,9 +274,11 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
   <section class="card">
     <h2>比赛自动流程 <span id="compState" class="badge">MANUAL</span></h2>
     <div class="statusline" id="compInfo">等待状态…</div>
+    <div class="pausebanner" id="compPauseBanner">站点触发：等待人工抓取...（抓取中）</div>
     <div class="btnrow" style="margin:10px 0">
       <button id="compStart" class="primary">▶ 启动三取三放</button>
       <button id="compAbort" class="stop">■ 全局中止</button>
+      <button id="compResume" class="primary" style="flex:1 1 100%;padding:14px;font-size:15px" disabled>抓取完毕 / 恢复循迹</button>
     </div>
     <div class="slots" id="compSlots"></div>
     <div class="btnrow">
@@ -717,6 +724,9 @@ $("compStart").onclick = () => {
   }
 };
 $("compAbort").onclick = () => compCommand("/api/stop", "已全局中止，请重新初始化");
+$("compResume").onclick = () => {
+  compCommand("/api/competition/cmd?cmd=resume", "已请求恢复循迹，正在跨线…");
+};
 $("zZero").onclick = () => {
   if (window.confirm("确认当前 Z 滑块处于运输安全零点？")) {
     compCommand("/api/competition/cmd?cmd=z_zero", "Z 零点已确认");
@@ -748,8 +758,15 @@ $("cfgSave").onclick = async () => {
 
 function renderComp(j) {
   S.comp = j;
+  const paused = j.state === "DEBUG_PAUSE";
   $("compState").textContent = j.state;
-  $("compState").className = "badge " + (j.error !== "NONE" ? "bad" : (j.running ? "ok" : ""));
+  $("compState").className = "badge " + (paused ? "warn" : (j.error !== "NONE" ? "bad" : (j.running ? "ok" : "")));
+  const pauseBanner = $("compPauseBanner");
+  pauseBanner.style.display = paused ? "block" : "none";
+  pauseBanner.textContent = j.cross
+    ? "正在跨线，请稍候…"
+    : "站点触发：等待人工抓取...（抓取中）｜现在可用方向键、升降和舵机手动操作";
+  $("compResume").disabled = !paused || !!j.cross;
   const seconds = Math.max(0, j.run_ms / 1000).toFixed(1);
   $("compInfo").textContent = `已装 ${j.picked}/3 · 已放 ${j.placed}/3 · 运行 ${seconds}s · Z=${j.zpos} 步` +
     ` | 初始化：Z ${j.zok ? "有效" : "无效"} / 盘 ${j.tray.zero ? "有效" : "无效"}` +

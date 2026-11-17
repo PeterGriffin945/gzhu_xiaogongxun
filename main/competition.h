@@ -27,6 +27,7 @@ typedef enum {
     COMPETITION_TARGET_ALIGN,
     COMPETITION_TARGET_SELECT,
     COMPETITION_TARGET_PLACE,
+    COMPETITION_DEBUG_PAUSE,   /* 逢横线即停：等待 Web 人工抓取 */
     COMPETITION_FINISHED,
     COMPETITION_ABORTED,
 } competition_state_t;
@@ -68,6 +69,8 @@ typedef struct {
     competition_state_t state;
     competition_error_t error;
     bool running;
+    bool debug_paused;      /* 站点暂停中，允许 Web 手动接管 */
+    bool resume_crossing;   /* 恢复后正在定步跨出横线 */
     bool config_confirmed;
     bool z_zero_valid;
     uint8_t picked_count;
@@ -86,6 +89,16 @@ typedef struct {
 esp_err_t competition_init(void);
 esp_err_t competition_start(void);
 void competition_abort(competition_error_t error);
+
+/**
+ * @brief 是否处于“逢横线即停”的人工抓取暂停
+ *
+ * 只读 volatile 标志，不获取 s_lock；Web 手动命令可直接调用，不会被状态机阻塞。
+ */
+bool competition_debug_paused(void);
+
+/** 请求恢复循迹：底盘先定步前移跨出横线，再重置站点检测并回到原循迹状态。 */
+esp_err_t competition_debug_resume(void);
 bool competition_auto_active(void);
 void competition_get_status(competition_status_t *out);
 void competition_get_config(competition_config_t *out);

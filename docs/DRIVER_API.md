@@ -675,6 +675,7 @@ typedef enum {
     COMPETITION_TARGET_ALIGN,
     COMPETITION_TARGET_SELECT,
     COMPETITION_TARGET_PLACE,
+    COMPETITION_DEBUG_PAUSE,   /* 逢横线即停：等待 Web 人工抓取 */
     COMPETITION_FINISHED,
     COMPETITION_ABORTED,
 } competition_state_t;
@@ -716,6 +717,8 @@ typedef struct {
     competition_state_t state;
     competition_error_t error;
     bool running;
+    bool debug_paused;      /* 站点暂停，Web 可手动接管 move/lift/servo */
+    bool resume_crossing;   /* 恢复后正在定步跨出横线 */
     bool config_confirmed;
     bool z_zero_valid;
     uint8_t picked_count;
@@ -735,6 +738,8 @@ esp_err_t competition_init(void);
 esp_err_t competition_start(void);
 void      competition_abort(competition_error_t error);
 bool      competition_auto_active(void);
+bool      competition_debug_paused(void);    /* 无锁读取，供 HTTP 手动命令判断 */
+esp_err_t competition_debug_resume(void);    /* 仅 DEBUG_PAUSE 有效 */
 void      competition_get_status(competition_status_t *out);
 void      competition_get_config(competition_config_t *out);
 esp_err_t competition_set_config(const competition_config_t *config, bool confirm);
@@ -809,19 +814,33 @@ const char *competition_error_name(competition_error_t error);
 | 当前状态 | 完成/事件 | 下一状态 |
 |---|---|---|
 | `ARM_STOW` | 收臂脚本完成 | `SOURCE_TRAVEL` |
-| `SOURCE_TRAVEL` | 横线事件 | `SOURCE_BRAKE` |
+| `SOURCE_TRAVEL` | 横线事件（当前调试策略） | `DEBUG_PAUSE` |
+| `SOURCE_TRAVEL` | 横线事件（完整自动流程保留） | `SOURCE_BRAKE` |
 | `SOURCE_BRAKE` | 四轮速度归零 | `SOURCE_IDENTIFY` |
 | `SOURCE_IDENTIFY` | 稳定颜色 + 置信度达标 | `SOURCE_ALIGN` |
 | `SOURCE_ALIGN` | 误差在容差内 | `SOURCE_PICK_LOAD` |
 | `SOURCE_PICK_LOAD` | 抓取装盘脚本完成 | `picked<3 → SOURCE_INDEX`，否则 `TARGET_TRAVEL` |
 | `SOURCE_INDEX` | 盘分度完成 | `SOURCE_TRAVEL` |
-| `TARGET_TRAVEL` | 横线事件 | `TARGET_BRAKE` |
+| `TARGET_TRAVEL` | 横线事件（当前调试策略） | `DEBUG_PAUSE` |
+| `TARGET_TRAVEL` | 横线事件（完整自动流程保留） | `TARGET_BRAKE` |
+| `DEBUG_PAUSE` | 收到 `competition_debug_resume()` 且跨线定步完成 | 回到暂停前的 `SOURCE_TRAVEL` / `TARGET_TRAVEL` |
 | `TARGET_BRAKE` | 四轮速度归零 | `TARGET_IDENTIFY` |
 | `TARGET_IDENTIFY` | 稳定目标颜色 | `TARGET_ALIGN` |
 | `TARGET_ALIGN` | 误差在容差内 | `TARGET_SELECT` |
 | `TARGET_SELECT` | 盘分度到目标颜色槽位 | `TARGET_PLACE` |
 | `TARGET_PLACE` | 放置脚本完成 | `placed<3 → TARGET_TRAVEL`，否则 `FINISHED` |
 | 任意 | 故障 / 超时 / `competition_abort()` | `ABORTED` |
+
+#### 4.12.3.1 调试暂停（逢横线即停）
+
+- 触发：`station_detector_update()` 返回 true → `chassis_stop()` → `DEBUG_PAUSE`。
+- 暂停期间不自动推进状态；`competition_debug_paused()` 返回 true，HTTP 层放行
+  `/api/move`、`/api/lift`、`/api/servo`，其余手动接口仍返回 409。
+- 恢复：`competition_debug_resume()` 只置位请求；比赛任务等四轮停稳后调用
+  `chassis_start_translation(0, +96mm, 2400)`，前移 `DEBUG_RESUME_CROSS_STEPS`
+  （默认 1500 微步）跨线。完成后回到暂停前的循迹状态，站点检测被重置，
+  看到 3 帧正常线后自动重新武装。
+- 暂停时长从 6 分钟总时限中扣除；暂停期间不检查 K230 在线状态。
 
 #### 4.12.4 中止与超时
 
@@ -900,7 +919,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
 | `/settings` | `save=1` | 立即保存调参到 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（见 4.14.2） |
-| `/api/competition/cmd` | `cmd=start\|abort\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`；`tray_to` 另需 `slot=0..5` | 比赛命令 |
+| `/api/competition/cmd` | `cmd=start\|abort\|resume\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | 比赛命令；`resume` 仅在 `DEBUG_PAUSE` 有效 |
 | `/api/competition/config` | 见 4.12.1 的字段名；`confirm=1` 同时确认 | 保存/确认标定 |
 | `/favicon.ico` | — | 204 |
 
@@ -955,6 +974,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 ```json
 {
   "ok":1, "state":"MANUAL", "error":"NONE", "running":0,
+  "dbg":0, "cross":0,
   "cfgok":0, "zok":0, "picked":0, "placed":0, "align":0,
   "color":0, "required":0, "zpos":0, "state_ms":0, "run_ms":0,
   "tray":{"zero":0,"slot":0,"target":0,"motion":0,"speed":60,"ms":500,
@@ -975,6 +995,8 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 |---|---|
 | `state/error` | 状态名 / 错误名（字符串，见 4.12） |
 | `running` | 自动流程是否运行中 |
+| `dbg` | 是否处于 `DEBUG_PAUSE` 人工抓取状态 |
+| `cross` | 恢复后是否正在定步跨线（此时手动底盘命令被拒绝） |
 | `cfgok` | 标定是否已确认 |
 | `zok` | Z 零点是否有效 |
 | `picked/placed` | 已抓取 / 已放置数量（各 3 个结束） |

@@ -19,7 +19,7 @@ ESP32-S3（ESP-IDF 6.1 / FreeRTOS）麦克纳姆轮工程车：
 | C/H 代码 | 约 7.2k 行 |
 | K230 Python | 约 0.6k 行 |
 | 最近构建 | 0 warning / 0 error |
-| 固件 | `0xE95F0`（≈933 KiB），1500K app 分区剩余 38% |
+| 固件 | `0xE9DA0`（≈935 KiB），1500K app 分区剩余 38% |
 
 ## 2. 目录与分层
 
@@ -92,8 +92,10 @@ K230 ──► 检测帧 ──► competition 状态机 ──► manipulator/t
 - **手动**：方向键只给方向，四轮步频峰值归一化到 `chassis_base_speed`。
 - **循迹**：基础航速 = `chassis_base_speed`；PID 输出转向；**丢线不停车**，
   保持上次转向继续前进。
-- **比赛**：16 状态机（收臂 → 循迹 → 刹车 → 识别 → 微调对位 → 取放 → 分度 →
-  再次循迹 …），站点由 8 路探头识别横向宽线触发。
+- **比赛**：完整流程为收臂 → 循迹 → 刹车 → 识别 → 微调对位 → 取放 → 分度 →
+  再次循迹；站点由 8 路探头识别横向宽线触发。当前调试策略为
+  **“逢横线即停”**：循迹途中一旦触发横线立即停车进入 `DEBUG_PAUSE`，
+  由 Web 人工完成抓取，点“恢复循迹”后自动定步跨线并继续。
 - **升降**：开环定步（ISR 计步），带 `[0, z_max]` 软限位；点动/定步互斥。
 
 ### 4.1 比赛状态机
@@ -106,6 +108,16 @@ MANUAL → ARM_STOW → SOURCE_TRAVEL → SOURCE_BRAKE → SOURCE_IDENTIFY
        →（已放<3 回 TARGET_TRAVEL；否则）FINISHED
 任意状态故障 / 超时 / 急停 → ABORTED
 ```
+
+当前调试策略下，`SOURCE_TRAVEL` / `TARGET_TRAVEL` 检测到横线后不进入
+BRAKE/IDENTIFY/ALIGN/PICK，而是进入 `DEBUG_PAUSE`：
+
+```
+TRAVEL ──横线──► DEBUG_PAUSE ──resume + 定步跨线──► 回到原 TRAVEL
+```
+
+暂停期间 HTTP 放行 `/api/move`、`/api/lift`、`/api/servo`；恢复时底盘前移
+`DEBUG_RESUME_CROSS_STEPS`（1500 微步 ≈ 96mm），并重置/重新武装站点检测。
 
 启动前置条件：配置已确认、Z 零点有效、盘位零点有效、K230 在线、
 两路 EN 已打开、所有执行器静止。

@@ -3,7 +3,7 @@
 基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xE95F0（955888 字节，约 933 KiB），2MB Flash 的 1500K app 分区剩余 38%。
+> 固件 0xE9DA0（957856 字节，约 935 KiB），2MB Flash 的 1500K app 分区剩余 38%。
 
 ---
 
@@ -151,6 +151,19 @@ mode, color, flags, cx_lo, cx_hi, cy_lo, cy_hi, area_lo, area_hi, confidence, re
 
 ## 3. 自动比赛流程（三取三放）
 
+### 3.0 当前调试策略：逢横线即停
+
+本版本用于实车标定机械臂/半自动抓取：`SOURCE_TRAVEL` / `TARGET_TRAVEL` 一旦
+检测到横线，立即平滑停车并进入 `DEBUG_PAUSE`。暂停期间网页的方向键
+（`/api/move`）、升降（`/api/lift`）和舵机（`/api/servo`）可直接接管，
+其余自动流程仍被 409 拒绝。
+
+点“抓取完毕 / 恢复循迹”后，底盘会自动向前定步
+`DEBUG_RESUME_CROSS_STEPS`（默认 1500 微步 ≈ 96mm）跨出横线，
+重置并重新武装站点检测，再回到暂停前的循迹状态。人工抓取时间不计入
+6 分钟总时限。下方完整三取三放流程仍保留在代码中，当前策略下不会进入
+BRAKE/IDENTIFY/ALIGN/PICK 等后续状态。
+
 ### 3.1 状态机
 
 ```
@@ -186,13 +199,14 @@ MANUAL ──start──► ARM_STOW
 |---|---|
 | `MANUAL` | 待机，网页手动命令可用 |
 | `ARM_STOW` | 收臂脚本：张开夹爪 → Z 回运输位 → 底座回运输角 |
-| `SOURCE_TRAVEL` | 切循迹模式驶向物料区；横线事件触发后平滑停车 |
+| `SOURCE_TRAVEL` | 切循迹模式驶向物料区；横线事件触发后停车并进入 `DEBUG_PAUSE` |
 | `SOURCE_BRAKE` | 等待四轮实际速度降到 0；超时按当前加速度动态计算 |
 | `SOURCE_IDENTIFY` | K230 进入 MATERIAL 模式，等待稳定颜色与置信度达标 |
 | `SOURCE_ALIGN` | 按视觉误差做短距开环平移，直到落在容差内或达到最大次数 |
 | `SOURCE_PICK_LOAD` | 执行"地面抓取 → 装入盘内 → 回运输位"动作脚本 |
 | `SOURCE_INDEX` | 物料盘正转一个工位（默认 60°），已装 3 个后转目标区 |
-| `TARGET_TRAVEL` | 循迹驶向靶环区 |
+| `TARGET_TRAVEL` | 循迹驶向靶环区；横线触发后同样进入 `DEBUG_PAUSE` |
+| `DEBUG_PAUSE` | 逢横线即停：等待 Web 人工抓取；可手动底盘/升降/舵机；收到 resume 后定步跨线并回到原循迹状态 |
 | `TARGET_BRAKE` | 停车等待 |
 | `TARGET_IDENTIFY` | K230 进入 RING 模式，识别目标颜色 |
 | `TARGET_ALIGN` | 按靶环基准做视觉对位 |
@@ -424,7 +438,7 @@ idf.py -p COM18 flash monitor
 | `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
 | `/settings` | `save=1` | 立即把 PID/阈值/速度/舵机校准写入 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（状态机、零点、K230、视觉、标定） |
-| `/api/competition/cmd` | `cmd=start\|abort\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`；`tray_to` 另需 `slot=0..5` | 比赛命令 |
+| `/api/competition/cmd` | `cmd=start\|abort\|resume\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | 比赛命令；`resume` 仅在 `DEBUG_PAUSE` 有效 |
 | `/api/competition/config` | `zpick ztray zplace zmax bstow bpick btray bplace gopen gclose bms gms lsps mcx mcy rcx rcy tol minconf maxiter xsign ysign nudge asps tspeed tms sblack sconfirm sclear srearm sinterval`，可选 `confirm=1` | 保存标定并可选确认 |
 
 示例：

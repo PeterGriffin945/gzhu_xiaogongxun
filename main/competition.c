@@ -13,6 +13,7 @@
 #include "chassis.h"
 #include "line_follow.h"
 #include "lu9685.h"
+#include "mecanum.h"
 #include "stepper.h"
 
 #define COMPETITION_PERIOD_MS 10
@@ -23,6 +24,11 @@
 #define COMPETITION_BRAKE_TIMEOUT_MS 1800
 #define COMPETITION_BRAKE_MARGIN_MS 800
 #define COMPETITION_SENSOR_TIMEOUT_MS 500
+
+/* 调试暂停恢复：向前定步跨出横线的距离（微步）与峰值速度。
+   1500 微步 ≈ 96mm，足够让 8 路探头离开常见 20~30mm 的站点线。 */
+#define DEBUG_RESUME_CROSS_STEPS 1500
+#define DEBUG_RESUME_CROSS_SPEED 2400.0f
 
 static SemaphoreHandle_t s_lock;
 static competition_config_t s_config;
@@ -44,6 +50,13 @@ static int64_t s_run_started_ms;
 static int64_t s_vision_after_ms;
 static uint32_t s_sensor_seq;
 static int64_t s_sensor_changed_ms;
+
+/* 半自动调试抓取：无锁标志供 Web 手动命令查询，暂停计时不计入 6 分钟总时限 */
+static volatile bool s_debug_paused;
+static bool s_resume_pending;
+static bool s_resume_crossing;
+static competition_state_t s_paused_from = COMPETITION_SOURCE_TRAVEL;
+static int64_t s_pause_started_ms;
 
 static int64_t now_ms(void)
 {
@@ -143,8 +156,22 @@ static void apply_config(void)
 
 static void change_state(competition_state_t state)
 {
+    int64_t now = now_ms();
+    if (s_state == COMPETITION_DEBUG_PAUSE && state != COMPETITION_DEBUG_PAUSE) {
+        /* 人工抓取所花时间不计入比赛总时限 */
+        if (s_run_started_ms > 0 && s_pause_started_ms > 0) {
+            s_run_started_ms += now - s_pause_started_ms;
+        }
+        s_debug_paused = false;
+        s_resume_pending = false;
+        s_resume_crossing = false;
+    }
+    if (state == COMPETITION_DEBUG_PAUSE) {
+        s_pause_started_ms = now;
+        s_debug_paused = true;
+    }
     s_state = state;
-    s_state_started_ms = now_ms();
+    s_state_started_ms = now;
     s_state_entry = true;
 }
 
@@ -154,6 +181,9 @@ static void abort_locked(competition_error_t error)
     s_error = error;
     s_state = COMPETITION_ABORTED;
     s_state_entry = false;
+    s_debug_paused = false;
+    s_resume_pending = false;
+    s_resume_crossing = false;
     s_z_zero_valid = false;
     manipulator_abort();
     chassis_stop();
@@ -168,6 +198,9 @@ static void finish_locked(void)
     s_error = COMPETITION_ERROR_NONE;
     s_state = COMPETITION_FINISHED;
     s_state_entry = false;
+    s_debug_paused = false;
+    s_resume_pending = false;
+    s_resume_crossing = false;
     chassis_stop();
     lu9685_pulse_stop_all();
     k230_link_set_mode(VISION_MODE_IDLE);
@@ -270,8 +303,69 @@ static void update_travel(bool source)
         }
     }
     if (station_detector_update(&s_station, mask, seq, now_ms())) {
+        /* 调试策略：逢横线即停，交给 Web 人工完成对位与抓放 */
+        s_paused_from = source ? COMPETITION_SOURCE_TRAVEL
+                               : COMPETITION_TARGET_TRAVEL;
         chassis_stop();
-        change_state(source ? COMPETITION_SOURCE_BRAKE : COMPETITION_TARGET_BRAKE);
+        change_state(COMPETITION_DEBUG_PAUSE);
+    }
+}
+
+static bool wheels_stopped(void)
+{
+    for (int i = 0; i < 4; ++i) {
+        if (fabsf(stepper_get_speed((stepper_axis_t)i)) > 1.0f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief 调试暂停处理
+ *
+ * 暂停期间不做任何自动动作，Web 可手动控制底盘/升降/舵机。
+ * 收到恢复请求后：等轮子停稳 → 定步前移跨线 → 回到暂停前的循迹状态。
+ * 全程只在 10ms 节拍内短暂持锁，不阻塞 HTTP 手动命令。
+ */
+static void update_debug_pause(void)
+{
+    if (!s_resume_pending) {
+        return;
+    }
+
+    if (s_resume_crossing) {
+        if (chassis_translation_active()) {
+            return;
+        }
+        if (!chassis_translation_done()) {
+            abort_locked(COMPETITION_ERROR_CHASSIS);
+            return;
+        }
+        /* change_state() 进入循迹状态时会重置站点检测并重新武装 */
+        change_state(s_paused_from);
+        return;
+    }
+
+    if (!stepper_chassis_enabled()) {
+        abort_locked(COMPETITION_ERROR_CHASSIS);
+        return;
+    }
+    /* 人工可能还按着方向键：先平滑停车，等下一个周期再启动跨线 */
+    if (!wheels_stopped()) {
+        chassis_stop();
+        return;
+    }
+
+    const float cross_mm =
+        mecanum_steps_to_mps((int32_t)DEBUG_RESUME_CROSS_STEPS) * 1000.0f;
+    esp_err_t err = chassis_start_translation(0.0f, cross_mm, DEBUG_RESUME_CROSS_SPEED);
+    if (err == ESP_OK) {
+        /* 跨线阶段由底盘位置模式接管；关闭手动放行，避免方向键打断定步 */
+        s_debug_paused = false;
+        s_resume_crossing = true;
+    } else if (err != ESP_ERR_INVALID_STATE) {
+        abort_locked(COMPETITION_ERROR_CHASSIS);
     }
 }
 
@@ -448,11 +542,14 @@ static void competition_update(void)
         return;
     }
     int64_t current = now_ms();
-    if (current - s_run_started_ms >= COMPETITION_RUN_LIMIT_MS) {
+    const bool paused = (s_state == COMPETITION_DEBUG_PAUSE);
+    /* 人工抓取暂停期间不受 6 分钟总时限与 K230 在线状态约束，
+       恢复时会把暂停时长从总时限中扣除。 */
+    if (!paused && current - s_run_started_ms >= COMPETITION_RUN_LIMIT_MS) {
         abort_locked(COMPETITION_ERROR_TIMEOUT);
         return;
     }
-    if (!k230_link_online()) {
+    if (!paused && !k230_link_online()) {
         abort_locked(COMPETITION_ERROR_VISION_LINK);
         return;
     }
@@ -515,6 +612,9 @@ static void competition_update(void)
             break;
         case COMPETITION_TARGET_SELECT:
             update_tray_state(false);
+            break;
+        case COMPETITION_DEBUG_PAUSE:
+            update_debug_pause();
             break;
         default:
             break;
@@ -589,6 +689,10 @@ esp_err_t competition_start(void)
         s_placed_count = 0;
         s_current_color = VISION_COLOR_UNKNOWN;
         s_required_color = VISION_COLOR_UNKNOWN;
+        s_debug_paused = false;
+        s_resume_pending = false;
+        s_resume_crossing = false;
+        s_pause_started_ms = 0;
         s_run_started_ms = now_ms();
         s_running = true;
         change_state(COMPETITION_ARM_STOW);
@@ -612,6 +716,26 @@ bool competition_auto_active(void)
     return s_running;
 }
 
+bool competition_debug_paused(void)
+{
+    /* 无锁读取：HTTP 手动命令不能被比赛状态锁阻塞 */
+    return s_debug_paused;
+}
+
+esp_err_t competition_debug_resume(void)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (s_running && s_state == COMPETITION_DEBUG_PAUSE && !s_resume_crossing) {
+        s_resume_pending = true;
+        result = ESP_OK;
+    }
+    xSemaphoreGive(s_lock);
+    return result;
+}
+
 void competition_get_status(competition_status_t *out)
 {
     if (out == NULL) {
@@ -624,6 +748,8 @@ void competition_get_status(competition_status_t *out)
         .state = s_state,
         .error = s_error,
         .running = s_running,
+        .debug_paused = s_debug_paused,
+        .resume_crossing = s_resume_crossing,
         .config_confirmed = s_config_confirmed,
         .z_zero_valid = s_z_zero_valid,
         .picked_count = s_picked_count,
@@ -710,7 +836,7 @@ const char *competition_state_name(competition_state_t state)
         "MANUAL", "ARM_STOW", "SOURCE_TRAVEL", "SOURCE_BRAKE",
         "SOURCE_IDENTIFY", "SOURCE_ALIGN", "SOURCE_PICK_LOAD", "SOURCE_INDEX",
         "TARGET_TRAVEL", "TARGET_BRAKE", "TARGET_IDENTIFY", "TARGET_ALIGN",
-        "TARGET_SELECT", "TARGET_PLACE", "FINISHED", "ABORTED",
+        "TARGET_SELECT", "TARGET_PLACE", "DEBUG_PAUSE", "FINISHED", "ABORTED",
     };
     return (state <= COMPETITION_ABORTED) ? names[state] : "UNKNOWN";
 }

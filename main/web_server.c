@@ -100,6 +100,18 @@ static bool manual_allowed(httpd_req_t *req)
     return false;
 }
 
+/* 调试暂停期间允许人工接管底盘/升降/舵机；其余自动流程仍独占执行器 */
+static bool manual_allowed_or_debug(httpd_req_t *req)
+{
+    if (!competition_auto_active() || competition_debug_paused()) {
+        return true;
+    }
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":0,\"msg\":\"automatic mission owns actuators\"}");
+    return false;
+}
+
 static esp_err_t index_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -166,14 +178,18 @@ static esp_err_t status_handler(httpd_req_t *req)
 
 static esp_err_t move_handler(httpd_req_t *req)
 {
-    if (!manual_allowed(req)) {
+    if (!manual_allowed_or_debug(req)) {
         return ESP_OK;
     }
     float vx = 0.0f, vy = 0.0f, w = 0.0f;
     query_float(req, "vx", &vx);
     query_float(req, "vy", &vy);
     query_float(req, "w", &w);
-    if ((vx != 0.0f || vy != 0.0f || w != 0.0f) && chassis_get_mode() != CHASSIS_MODE_MANUAL) {
+    /* 自动流程（含调试暂停）期间不再由 /api/move 切模式：
+       暂停时底盘已是 MANUAL，跨线时处于 POSITION，切模式会取消定步。
+       非比赛状态下仍保持“一给速度就回手动”的旧行为。 */
+    if (!competition_auto_active() && (vx != 0.0f || vy != 0.0f || w != 0.0f) &&
+        chassis_get_mode() != CHASSIS_MODE_MANUAL) {
         chassis_set_mode(CHASSIS_MODE_MANUAL);
     }
     chassis_set_velocity(vx, vy, w);
@@ -215,7 +231,7 @@ static esp_err_t enable_handler(httpd_req_t *req)
 
 static esp_err_t lift_handler(httpd_req_t *req)
 {
-    if (!manual_allowed(req)) {
+    if (!manual_allowed_or_debug(req)) {
         return ESP_OK;
     }
     float v = 0.0f;
@@ -228,7 +244,7 @@ static esp_err_t lift_handler(httpd_req_t *req)
 
 static esp_err_t servo_handler(httpd_req_t *req)
 {
-    if (!manual_allowed(req)) {
+    if (!manual_allowed_or_debug(req)) {
         return ESP_OK;
     }
     int ch = 0, a = 90;
@@ -430,6 +446,7 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
     char buf[4096];
     int n = snprintf(buf, sizeof(buf),
         "{\"ok\":1,\"state\":\"%s\",\"error\":\"%s\",\"running\":%d,"
+        "\"dbg\":%d,\"cross\":%d,"
         "\"cfgok\":%d,\"zok\":%d,\"picked\":%d,\"placed\":%d,\"align\":%d,"
         "\"color\":%d,\"required\":%d,\"zpos\":%" PRId32 ",\"state_ms\":%" PRId64 ",\"run_ms\":%" PRId64 ","
         "\"tray\":{\"zero\":%d,\"slot\":%d,\"target\":%d,\"motion\":%d,\"speed\":%d,\"ms\":%" PRIu32 ",\"colors\":[%d,%d,%d,%d,%d,%d]},"
@@ -441,6 +458,7 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         "\"tol\":%d,\"minconf\":%d,\"maxiter\":%d,\"xsign\":%d,\"ysign\":%d,\"nudge\":%.2f,\"asps\":%.1f,"
         "\"tspeed\":%d,\"tms\":%" PRIu32 ",\"sblack\":%d,\"sconfirm\":%d,\"sclear\":%d,\"srearm\":%d,\"sinterval\":%" PRIu32 "}}",
         competition_state_name(st.state), competition_error_name(st.error), st.running ? 1 : 0,
+        st.debug_paused ? 1 : 0, st.resume_crossing ? 1 : 0,
         st.config_confirmed ? 1 : 0, st.z_zero_valid ? 1 : 0, st.picked_count, st.placed_count,
         st.align_iterations, st.current_color, st.required_color, st.z_position,
         st.state_elapsed_ms, st.run_elapsed_ms,
@@ -475,7 +493,8 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
 static esp_err_t competition_command_handler(httpd_req_t *req)
 {
     char command[24];
-    if (!query_value(req, "cmd", command, sizeof(command))) {
+    if (!query_value(req, "cmd", command, sizeof(command)) &&
+        !query_value(req, "action", command, sizeof(command))) {
         return send_err(req, "{\"ok\":0,\"msg\":\"cmd required\"}");
     }
     esp_err_t err = ESP_OK;
@@ -487,6 +506,8 @@ static esp_err_t competition_command_handler(httpd_req_t *req)
         err = competition_set_z_zero();
     } else if (strcmp(command, "confirm") == 0) {
         err = competition_confirm_config();
+    } else if (strcmp(command, "resume") == 0) {
+        err = competition_debug_resume();
     } else {
         if (!manual_allowed(req)) {
             return ESP_OK;
