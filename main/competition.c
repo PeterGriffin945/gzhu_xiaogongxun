@@ -30,6 +30,11 @@
 #define DEBUG_RESUME_CROSS_STEPS 1500
 #define DEBUG_RESUME_CROSS_SPEED 2400.0f
 
+/* 站点类型：用于决定“执行”按钮走抓取还是放置脚本 */
+#define DEBUG_STATION_NONE   0
+#define DEBUG_STATION_SOURCE 1
+#define DEBUG_STATION_TARGET 2
+
 static SemaphoreHandle_t s_lock;
 static competition_config_t s_config;
 static competition_state_t s_state = COMPETITION_MANUAL;
@@ -55,6 +60,7 @@ static int64_t s_sensor_changed_ms;
 static volatile bool s_debug_paused;
 static bool s_resume_pending;
 static bool s_resume_crossing;
+static uint8_t s_pause_kind;
 static competition_state_t s_paused_from = COMPETITION_SOURCE_TRAVEL;
 static int64_t s_pause_started_ms;
 
@@ -165,6 +171,7 @@ static void change_state(competition_state_t state)
         s_debug_paused = false;
         s_resume_pending = false;
         s_resume_crossing = false;
+        s_pause_kind = DEBUG_STATION_NONE;
     }
     if (state == COMPETITION_DEBUG_PAUSE) {
         s_pause_started_ms = now;
@@ -184,6 +191,7 @@ static void abort_locked(competition_error_t error)
     s_debug_paused = false;
     s_resume_pending = false;
     s_resume_crossing = false;
+    s_pause_kind = DEBUG_STATION_NONE;
     s_z_zero_valid = false;
     manipulator_abort();
     chassis_stop();
@@ -201,6 +209,7 @@ static void finish_locked(void)
     s_debug_paused = false;
     s_resume_pending = false;
     s_resume_crossing = false;
+    s_pause_kind = DEBUG_STATION_NONE;
     chassis_stop();
     lu9685_pulse_stop_all();
     k230_link_set_mode(VISION_MODE_IDLE);
@@ -306,6 +315,7 @@ static void update_travel(bool source)
         /* 调试策略：逢横线即停，交给 Web 人工完成对位与抓放 */
         s_paused_from = source ? COMPETITION_SOURCE_TRAVEL
                                : COMPETITION_TARGET_TRAVEL;
+        s_pause_kind = source ? DEBUG_STATION_SOURCE : DEBUG_STATION_TARGET;
         chassis_stop();
         change_state(COMPETITION_DEBUG_PAUSE);
     }
@@ -505,7 +515,10 @@ static void update_manipulator_state(bool source)
     tray_status_t tray;
     tray_controller_get_status(&tray);
     if (source) {
-        if (tray_controller_mark_loaded(tray.current_slot, s_current_color) != ESP_OK) {
+        /* 无视觉调试模式下颜色未知：不写颜色台账，仅计数与分度。
+           靶环放置由人工转盘选择槽位，因此不依赖颜色匹配。 */
+        if (s_current_color != VISION_COLOR_UNKNOWN &&
+            tray_controller_mark_loaded(tray.current_slot, s_current_color) != ESP_OK) {
             abort_locked(COMPETITION_ERROR_TRAY);
             return;
         }
@@ -549,10 +562,7 @@ static void competition_update(void)
         abort_locked(COMPETITION_ERROR_TIMEOUT);
         return;
     }
-    if (!paused && !k230_link_online()) {
-        abort_locked(COMPETITION_ERROR_VISION_LINK);
-        return;
-    }
+    /* 当前流程不依赖 K230：视觉板断开时仍可人工对位并执行取放 */
     if (lu9685_pulse_faulted(LU9685_CH_TRAY)) {
         abort_locked(COMPETITION_ERROR_SERVO);
         return;
@@ -665,8 +675,9 @@ esp_err_t competition_start(void)
         result = ESP_ERR_INVALID_STATE;
     } else if (!s_config_confirmed || !s_z_zero_valid || !tray.zero_valid) {
         result = ESP_ERR_INVALID_STATE;
-    } else if (!k230_link_online() || !lu9685_available() || !lu9685_pulse_ready() ||
+    } else if (!lu9685_available() || !lu9685_pulse_ready() ||
                lu9685_pulse_faulted(LU9685_CH_TRAY)) {
+        /* 不要求 K230 在线：当前半自动流程由人工对位，视觉板可完全断开 */
         result = ESP_ERR_INVALID_STATE;
     } else if (!stepper_chassis_enabled() || !stepper_lift_enabled() ||
                !ads1115_get_latest(volts, &seq)) {
@@ -736,6 +747,28 @@ esp_err_t competition_debug_resume(void)
     return result;
 }
 
+esp_err_t competition_debug_execute(void)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    /* 执行前要求：暂停中、未在跨线、四轮与升降静止、物料盘不在分度。
+       全部满足后进入既有动作脚本状态，由 enter_state() 启动机械臂。 */
+    if (s_running && s_state == COMPETITION_DEBUG_PAUSE && !s_resume_crossing &&
+        !tray_controller_busy() && chassis_lift_idle() && wheels_stopped()) {
+        if (s_pause_kind == DEBUG_STATION_SOURCE) {
+            change_state(COMPETITION_SOURCE_PICK_LOAD);
+            result = ESP_OK;
+        } else if (s_pause_kind == DEBUG_STATION_TARGET) {
+            change_state(COMPETITION_TARGET_PLACE);
+            result = ESP_OK;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return result;
+}
+
 void competition_get_status(competition_status_t *out)
 {
     if (out == NULL) {
@@ -750,6 +783,7 @@ void competition_get_status(competition_status_t *out)
         .running = s_running,
         .debug_paused = s_debug_paused,
         .resume_crossing = s_resume_crossing,
+        .pause_kind = s_pause_kind,
         .config_confirmed = s_config_confirmed,
         .z_zero_valid = s_z_zero_valid,
         .picked_count = s_picked_count,

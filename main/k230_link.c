@@ -189,6 +189,13 @@ esp_err_t k230_link_set_mode(vision_mode_t mode)
     if (mode > VISION_MODE_TRAY) {
         return ESP_ERR_INVALID_ARG;
     }
+    /* 台架调试/无视觉模式：K230 不在线时直接返回，避免每个状态白等 240ms ACK */
+    if (!k230_link_online()) {
+        taskENTER_CRITICAL(&s_state_mux);
+        s_status.requested_mode = mode;
+        taskEXIT_CRITICAL(&s_state_mux);
+        return ESP_OK;
+    }
     uint8_t payload = (uint8_t)mode;
 
     /* 指令可能被步进电机 EMI 破坏；等待 ACK 并重发，避免识别阶段空等 12s。 */

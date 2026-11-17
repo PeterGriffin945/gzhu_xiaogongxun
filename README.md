@@ -3,7 +3,7 @@
 基于 **ESP-IDF v5.2+ / v6.x** 与 FreeRTOS 的高实时性底盘、机械臂与自动比赛控制系统。
 
 > 本工程已在本机 **ESP-IDF v6.1.0** 上完成编译验证：**0 warning / 0 error**，
-> 固件 0xE9DA0（957856 字节，约 935 KiB），2MB Flash 的 1500K app 分区剩余 38%。
+> 固件 0xEA1B0（958896 字节，约 936 KiB），2MB Flash 的 1500K app 分区剩余 38%。
 
 ---
 
@@ -153,16 +153,26 @@ mode, color, flags, cx_lo, cx_hi, cy_lo, cy_hi, area_lo, area_hi, confidence, re
 
 ### 3.0 当前调试策略：逢横线即停
 
-本版本用于实车标定机械臂/半自动抓取：`SOURCE_TRAVEL` / `TARGET_TRAVEL` 一旦
-检测到横线，立即平滑停车并进入 `DEBUG_PAUSE`。暂停期间网页的方向键
-（`/api/move`）、升降（`/api/lift`）和舵机（`/api/servo`）可直接接管，
-其余自动流程仍被 409 拒绝。
+本版本用于**无视觉（K230 可完全断开）的人工对位 + 半自动三取三放**：
 
-点“抓取完毕 / 恢复循迹”后，底盘会自动向前定步
-`DEBUG_RESUME_CROSS_STEPS`（默认 1500 微步 ≈ 96mm）跨出横线，
-重置并重新武装站点检测，再回到暂停前的循迹状态。人工抓取时间不计入
-6 分钟总时限。下方完整三取三放流程仍保留在代码中，当前策略下不会进入
-BRAKE/IDENTIFY/ALIGN/PICK 等后续状态。
+1. `SOURCE_TRAVEL` / `TARGET_TRAVEL` 检测到横线 → 立即平滑停车，进入
+   `DEBUG_PAUSE`，并记录本站类型（物料站 / 靶环站）。
+2. 暂停期间网页的方向键（`/api/move`）、升降（`/api/lift`）、舵机
+   （`/api/servo`）和物料盘分度（`tray_next` / `tray_to`）可直接接管。
+   人工把车开到物料/靶环的正前方，并调好升降高度与底座/夹爪姿态。
+3. 点“**执行抓取**”（物料站）或“**执行放置**”（靶环站）→ 进入既有的
+   `SOURCE_PICK_LOAD` / `TARGET_PLACE` 动作脚本，AGV 自动完成夹取、
+   升降、装盘/放置，全程不需要视觉。
+4. 动作完成后自动继续：物料站会再 `SOURCE_INDEX` 转一个盘位，然后切回
+   循迹前往下一条横线；靶环站直接切回 `TARGET_TRAVEL`。此时人工无需操作，
+   直到下一次停车再接管。
+5. 已抓 3 个后自动转入靶环阶段；已放 3 个后 `FINISHED` 停车。
+6. 若本站不需要动作，点“**跳过本站 / 恢复循迹**”：底盘自动向前定步
+   `DEBUG_RESUME_CROSS_STEPS`（默认 1500 微步 ≈ 96mm）跨出横线，
+   重置并重新武装站点检测后继续循迹。
+
+人工暂停时间不计入 6 分钟总时限。完整自动流程（BRAKE/IDENTIFY/ALIGN 等）
+仍保留在代码中，但在当前策略下不会被走到。
 
 ### 3.1 状态机
 
@@ -206,7 +216,7 @@ MANUAL ──start──► ARM_STOW
 | `SOURCE_PICK_LOAD` | 执行"地面抓取 → 装入盘内 → 回运输位"动作脚本 |
 | `SOURCE_INDEX` | 物料盘正转一个工位（默认 60°），已装 3 个后转目标区 |
 | `TARGET_TRAVEL` | 循迹驶向靶环区；横线触发后同样进入 `DEBUG_PAUSE` |
-| `DEBUG_PAUSE` | 逢横线即停：等待 Web 人工抓取；可手动底盘/升降/舵机；收到 resume 后定步跨线并回到原循迹状态 |
+| `DEBUG_PAUSE` | 逢横线即停：人工对位后 `execute` 执行抓取/放置；或 `resume` 跳过并定步跨线 |
 | `TARGET_BRAKE` | 停车等待 |
 | `TARGET_IDENTIFY` | K230 进入 RING 模式，识别目标颜色 |
 | `TARGET_ALIGN` | 按靶环基准做视觉对位 |
@@ -223,11 +233,12 @@ MANUAL ──start──► ARM_STOW
 2. 标定已确认（`config_confirmed == true`，网页"保存并确认本次标定"）。
 3. Z 零点有效（`z_zero_valid == true`，网页"设当前 Z 为运输零点"）。
 4. 盘位零点有效（`tray.zero_valid == true`，网页"设当前盘位为 slot0"）。
-5. K230 在线（1.5s 内收到过任意合法帧）。
-6. 两路 EN 都使能（底盘 M1~M4、升降 M5）。
-7. LU9685 在线、脉冲后台任务可用，且 CH4 无停止失败故障。
-8. ADS1115 已有有效采样帧。
-9. 所有执行器静止：物料盘空闲、机械臂空闲、无平移运动、升降空闲。
+5. 两路 EN 都使能（底盘 M1~M4、升降 M5）。
+6. LU9685 在线、脉冲后台任务可用，且 CH4 无停止失败故障。
+7. ADS1115 已有有效采样帧。
+8. 所有执行器静止：物料盘空闲、机械臂空闲、无平移运动、升降空闲。
+
+> 当前流程不要求 K230 在线，视觉板可以完全不接。
 
 启动成功后先 `chassis_stop()` 强制回到手动并平滑停车，再重新应用标定、
 安装升降软限位 `[0, z_max]`，然后进入 `ARM_STOW`。
@@ -438,7 +449,7 @@ idf.py -p COM18 flash monitor
 | `/api/stop` | — | 平滑停车 + 取消舵机点动 + 中止自动比赛 |
 | `/settings` | `save=1` | 立即把 PID/阈值/速度/舵机校准写入 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（状态机、零点、K230、视觉、标定） |
-| `/api/competition/cmd` | `cmd=start\|abort\|resume\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | 比赛命令；`resume` 仅在 `DEBUG_PAUSE` 有效 |
+| `/api/competition/cmd` | `cmd=start\|abort\|resume\|skip\|execute\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | `execute`/`resume` 仅在 `DEBUG_PAUSE` 有效 |
 | `/api/competition/config` | `zpick ztray zplace zmax bstow bpick btray bplace gopen gclose bms gms lsps mcx mcy rcx rcy tol minconf maxiter xsign ysign nudge asps tspeed tms sblack sconfirm sclear srearm sinterval`，可选 `confirm=1` | 保存标定并可选确认 |
 
 示例：

@@ -19,7 +19,7 @@ ESP32-S3（ESP-IDF 6.1 / FreeRTOS）麦克纳姆轮工程车：
 | C/H 代码 | 约 7.2k 行 |
 | K230 Python | 约 0.6k 行 |
 | 最近构建 | 0 warning / 0 error |
-| 固件 | `0xE9DA0`（≈935 KiB），1500K app 分区剩余 38% |
+| 固件 | `0xEA1B0`（≈936 KiB），1500K app 分区剩余 38% |
 
 ## 2. 目录与分层
 
@@ -113,14 +113,18 @@ MANUAL → ARM_STOW → SOURCE_TRAVEL → SOURCE_BRAKE → SOURCE_IDENTIFY
 BRAKE/IDENTIFY/ALIGN/PICK，而是进入 `DEBUG_PAUSE`：
 
 ```
-TRAVEL ──横线──► DEBUG_PAUSE ──resume + 定步跨线──► 回到原 TRAVEL
+TRAVEL ──横线──► DEBUG_PAUSE
+                    ├─ execute（物料站）→ SOURCE_PICK_LOAD → SOURCE_INDEX → TRAVEL
+                    ├─ execute（靶环站）→ TARGET_PLACE → TRAVEL / FINISHED
+                    └─ resume/skip → 定步跨线 → 回到原 TRAVEL
 ```
 
-暂停期间 HTTP 放行 `/api/move`、`/api/lift`、`/api/servo`；恢复时底盘前移
+暂停期间 HTTP 放行 `/api/move`、`/api/lift`、`/api/servo` 以及物料盘分度；
+人工对位后由 `execute` 启动既有动作脚本，全程不依赖 K230。跳过时底盘前移
 `DEBUG_RESUME_CROSS_STEPS`（1500 微步 ≈ 96mm），并重置/重新武装站点检测。
 
-启动前置条件：配置已确认、Z 零点有效、盘位零点有效、K230 在线、
-两路 EN 已打开、所有执行器静止。
+启动前置条件：配置已确认、Z 零点有效、盘位零点有效、两路 EN 已打开、
+所有执行器静止；**不要求 K230 在线**。
 
 ## 5. 并发与锁
 

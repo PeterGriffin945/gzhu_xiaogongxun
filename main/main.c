@@ -82,9 +82,9 @@ void app_main(void)
         ESP_LOGW(TAG, "settings storage unavailable, using defaults");
     }
 
-    /* K230 链路失败只禁止自动比赛，不影响网页手动排障。 */
+    /* K230 链路失败不影响当前半自动流程：人工对位 + 执行取放，视觉板可断开。 */
     if (k230_link_init() != ESP_OK) {
-        ESP_LOGW(TAG, "K230 UART unavailable, automatic competition disabled");
+        ESP_LOGW(TAG, "K230 UART unavailable, manual-positioning flow still available");
     }
     ESP_ERROR_CHECK(competition_init());
 

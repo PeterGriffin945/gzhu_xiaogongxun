@@ -278,7 +278,8 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
     <div class="btnrow" style="margin:10px 0">
       <button id="compStart" class="primary">▶ 启动三取三放</button>
       <button id="compAbort" class="stop">■ 全局中止</button>
-      <button id="compResume" class="primary" style="flex:1 1 100%;padding:14px;font-size:15px" disabled>抓取完毕 / 恢复循迹</button>
+      <button id="compExecute" class="primary" style="flex:1 1 100%;padding:14px;font-size:15px" disabled>▶ 执行抓取</button>
+      <button id="compResume" class="primary" style="flex:1 1 100%;padding:12px;font-size:14px" disabled>跳过本站 / 恢复循迹</button>
     </div>
     <div class="slots" id="compSlots"></div>
     <div class="btnrow">
@@ -725,7 +726,10 @@ $("compStart").onclick = () => {
 };
 $("compAbort").onclick = () => compCommand("/api/stop", "已全局中止，请重新初始化");
 $("compResume").onclick = () => {
-  compCommand("/api/competition/cmd?cmd=resume", "已请求恢复循迹，正在跨线…");
+  compCommand("/api/competition/cmd?cmd=resume", "已跳过本站，正在跨线恢复循迹…");
+};
+$("compExecute").onclick = () => {
+  compCommand("/api/competition/cmd?cmd=execute", "已开始执行本站动作，请勿手动干预");
 };
 $("zZero").onclick = () => {
   if (window.confirm("确认当前 Z 滑块处于运输安全零点？")) {
@@ -761,11 +765,16 @@ function renderComp(j) {
   const paused = j.state === "DEBUG_PAUSE";
   $("compState").textContent = j.state;
   $("compState").className = "badge " + (paused ? "warn" : (j.error !== "NONE" ? "bad" : (j.running ? "ok" : "")));
+  const isTarget = j.pk === 2;
   const pauseBanner = $("compPauseBanner");
   pauseBanner.style.display = paused ? "block" : "none";
   pauseBanner.textContent = j.cross
     ? "正在跨线，请稍候…"
-    : "站点触发：等待人工抓取...（抓取中）｜现在可用方向键、升降和舵机手动操作";
+    : (isTarget
+        ? "站点触发（靶环站）：先人工对位/转盘选槽，再点“执行放置”｜可用方向键、升降和舵机"
+        : "站点触发（物料站）：人工对位后点“执行抓取”｜可用方向键、升降和舵机");
+  $("compExecute").textContent = isTarget ? "▶ 执行放置" : "▶ 执行抓取";
+  $("compExecute").disabled = !paused || !!j.cross;
   $("compResume").disabled = !paused || !!j.cross;
   const seconds = Math.max(0, j.run_ms / 1000).toFixed(1);
   $("compInfo").textContent = `已装 ${j.picked}/3 · 已放 ${j.placed}/3 · 运行 ${seconds}s · Z=${j.zpos} 步` +
@@ -787,7 +796,7 @@ function renderComp(j) {
   $("compStart").disabled = !!j.running;
   $("zZero").disabled = !!j.running;
   $("trayZero").disabled = !!j.running;
-  $("trayNext").disabled = !!j.running;
+  $("trayNext").disabled = !!j.running && !paused;
   if (!S.cfgEditing) {
     cfgElements.forEach(el => {
       if (document.activeElement !== el &&

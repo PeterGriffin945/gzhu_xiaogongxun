@@ -71,6 +71,7 @@ typedef struct {
     bool running;
     bool debug_paused;      /* 站点暂停中，允许 Web 手动接管 */
     bool resume_crossing;   /* 恢复后正在定步跨出横线 */
+    uint8_t pause_kind;     /* 0 无 / 1 物料站 / 2 靶环站 */
     bool config_confirmed;
     bool z_zero_valid;
     uint8_t picked_count;
@@ -99,6 +100,14 @@ bool competition_debug_paused(void);
 
 /** 请求恢复循迹：底盘先定步前移跨出横线，再重置站点检测并回到原循迹状态。 */
 esp_err_t competition_debug_resume(void);
+
+/**
+ * @brief 执行本站动作（人工将车停到目标位置后调用）
+ *
+ * 物料站 → 启动“地面抓取 → 装盘”脚本；靶环站 → 启动“盘内取出 → 放置”脚本。
+ * 仅在 DEBUG_PAUSE、执行器静止且物料盘空闲时成功。全程不依赖 K230 视觉。
+ */
+esp_err_t competition_debug_execute(void);
 bool competition_auto_active(void);
 void competition_get_status(competition_status_t *out);
 void competition_get_config(competition_config_t *out);
