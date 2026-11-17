@@ -3,18 +3,17 @@
 # 保留原算法与写法：色块检测 -> 取最大 blob -> 画面中心准星 -> dx/dy -> 对准判定
 # 新增完善：
 #   1. ROI 分模式：MATERIAL 只看下方物料区，RING 只看上方靶环区
-#   2. 屏幕自适应：优先 800x480 ST7701 实体屏（2 倍缩放居中），失败退回 IDE 虚拟屏
+#   2. 屏幕：默认 IDE 虚拟屏（与原型一致），USE_LCD=True 时使用板载 ST7701 800x480
 #   3. 与 ESP32-S3 完全兼容的 A5 5A 协议：命令 / ACK / 心跳 / 80ms 周期检测
 #      CRC 只覆盖 ver..payload（不含同步字），cx/cy 为绝对坐标，flags 为
 #      bit0 detected + bit1 stable，无目标也持续上报
 #
 # 运行前：把本文件拷到 K230D，作为 main.py 运行；UART 使用 PORT2 / UART(2)。
-# 若主要用 IDE 预览，把 PREFER_IDE_DISPLAY 改为 True。
+# 板载屏显示把 USE_LCD 改为 True。
 import time
 import math
 import struct
 from machine import UART
-import image
 
 from media.sensor import *
 from media.display import *
@@ -30,7 +29,7 @@ CENTER_X = 160           # QVGA 320x240 图像中心，也是 ESP 的默认目�
 CENTER_Y = 120
 ALIGN_RADIUS = 15        # 仅用于屏幕提示；最终对位由 ESP 的容差与 nudge 决定
 STABLE_FRAMES = 3        # 连续同色帧数达到该值才置 stable
-PREFER_IDE_DISPLAY = False   # True = 优先 VIRT 虚拟屏；False = 优先实体 ST7701
+USE_LCD = False          # False = IDE 虚拟屏（与原型一致）；True = 板载 ST7701 800x480
 
 MODE_IDLE, MODE_MATERIAL, MODE_RING, MODE_TRAY = 0, 1, 2, 3
 COLOR_UNKNOWN, COLOR_RED, COLOR_GREEN, COLOR_BLUE = 0, 1, 2, 3
@@ -122,97 +121,17 @@ def code_to_color(code):
     return COLOR_UNKNOWN
 
 
-# ========================= 屏幕适配层 =========================
-class DisplayAdapter:
-    """优先实体屏 ST7701 800x480（QVGA 2 倍缩放居中），失败退回 IDE 虚拟屏。"""
-
-    def __init__(self):
-        self.mode = "none"
-        self.canvas = None
-        self.panel_w = 0
-        self.panel_h = 0
-
-    def _start_lcd(self):
-        driver = getattr(Display, "ST7701", None)
-        if driver is None:
-            return False
-        # 实体屏优先；to_ide=True 兼容 IDE 预览，失败再试纯本地显示
-        for to_ide in (True, False):
-            try:
-                Display.init(driver, width=800, height=480, to_ide=to_ide)
-                self.canvas = image.Image(800, 480, image.RGB565)
-                self.panel_w, self.panel_h = 800, 480
-                self.mode = "lcd"
-                return True
-            except Exception as error:
-                print("ST7701 init failed:", error)
-        return False
-
-    def start(self):
-        if PREFER_IDE_DISPLAY:
-            try:
-                Display.init(Display.VIRT, 320, 240)
-                self.mode = "virt"
-                return True
-            except Exception as error:
-                print("VIRT display init failed:", error)
-        if self._start_lcd():
-            return True
-        try:
-            Display.init(Display.VIRT, 320, 240)
-            self.mode = "virt"
-            return True
-        except Exception as error:
-            print("VIRT display init failed:", error)
-            self.mode = "none"
-            return False
-
-    def show(self, img):
-        try:
-            if self.mode == "virt":
-                Display.show_image(img)
-                return
-            if self.mode != "lcd" or self.canvas is None:
-                return
-            # 黑边清屏 + 640x480 居中显示（2 倍放大）
-            self.canvas.draw_rectangle(0, 0, self.panel_w, self.panel_h,
-                                       color=(0, 0, 0), fill=True)
-            try:
-                self.canvas.draw_image(img, 80, 0, x_scale=2, y_scale=2)
-            except Exception:
-                # 旧固件不支持缩放时退化为 1:1 居中
-                self.canvas.draw_image(img, (self.panel_w - 320) // 2,
-                                       (self.panel_h - 240) // 2)
-            Display.show_image(self.canvas)
-        except Exception:
-            # 屏幕异常不影响视觉与串口主流程
-            pass
-
-
-def draw_text(img, x, y, size, text, color=(255, 255, 255)):
-    """兼容不同固件字库：优先高级字体，失败退回 draw_string。"""
-    try:
-        img.draw_string_advanced(x, y, size, text, color=color)
-        return
-    except Exception:
-        pass
-    try:
-        img.draw_string(x, y, text, color=color, scale=max(1, size // 12))
-    except Exception:
-        img.draw_string(x, y, text, color=color)
-
-
-# ========================= 硬件初始化 =========================
+# ========================= 硬件初始化（与原型脚本完全一致） =========================
 sensor = Sensor()
 sensor.reset()
-try:
-    sensor.set_framesize(Sensor.QVGA)
-except Exception:
-    sensor.set_framesize(width=320, height=240)
+sensor.set_framesize(Sensor.QVGA)      # 320x240
 sensor.set_pixformat(Sensor.RGB565)
 
-display = DisplayAdapter()
-display.start()
+# 屏幕：默认和原型一样用 IDE 虚拟屏；需要板载 ST7701 时把 USE_LCD 改 True
+if USE_LCD:
+    Display.init(Display.ST7701, width=800, height=480, to_ide=True)
+else:
+    Display.init(Display.VIRT, 320, 240)
 
 MediaManager.init()
 sensor.run()
@@ -287,13 +206,22 @@ try:
         profile = PROFILES.get(mode)
         blobs = []
         if profile is not None:
-            blobs = img.find_blobs(
-                THRESHOLDS,
-                roi=profile["roi"],
-                pixels_threshold=profile["min_pixels"],
-                area_threshold=profile["min_area"],
-                merge=True,
-            )
+            try:
+                blobs = img.find_blobs(
+                    THRESHOLDS,
+                    roi=profile["roi"],
+                    pixels_threshold=profile["min_pixels"],
+                    area_threshold=profile["min_area"],
+                    merge=True,
+                )
+            except Exception:
+                # 个别固件不支持 roi 关键字时退回全图检测
+                blobs = img.find_blobs(
+                    THRESHOLDS,
+                    pixels_threshold=profile["min_pixels"],
+                    area_threshold=profile["min_area"],
+                    merge=True,
+                )
 
         blob = max(blobs, key=lambda b: b.pixels()) if blobs else None
         detected = blob is not None
@@ -333,18 +261,20 @@ try:
             img.draw_cross(cx, cy, color=ui_color, size=6)
             img.draw_line(CENTER_X, CENTER_Y, cx, cy,
                           color=(255, 255, 0), thickness=1)
-            draw_text(img, 5, 5, 20, "MODE %d  %s" % (mode, name), ui_color)
-            draw_text(img, 5, 30, 20, "dx:%d dy:%d" % (dx, dy), (255, 255, 0))
-            draw_text(img, 5, 55, 20,
-                      "ALIGNED" if aligned else "ALIGNING...",
-                      (0, 255, 0) if aligned else (255, 165, 0))
+            img.draw_string_advanced(5, 5, 20, "MODE %d  %s" % (mode, name),
+                                     color=ui_color)
+            img.draw_string_advanced(5, 30, 20, "dx:%d dy:%d" % (dx, dy),
+                                     color=(255, 255, 0))
+            img.draw_string_advanced(5, 55, 20,
+                                     "ALIGNED" if aligned else "ALIGNING...",
+                                     color=(0, 255, 0) if aligned else (255, 165, 0))
         else:
-            draw_text(img, 5, 5, 20, "MODE %d  NO TARGET" % mode,
-                      (200, 200, 200))
-        draw_text(img, 5, 80, 16,
-                  "ROI %s" % ("MATERIAL" if mode == MODE_MATERIAL else
-                              ("RING" if mode == MODE_RING else "IDLE")),
-                  (150, 150, 150))
+            img.draw_string_advanced(5, 5, 20, "MODE %d  NO TARGET" % mode,
+                                     color=(200, 200, 200))
+        img.draw_string_advanced(5, 80, 16,
+                                 "ROI %s" % ("MATERIAL" if mode == MODE_MATERIAL else
+                                             ("RING" if mode == MODE_RING else "IDLE")),
+                                 color=(150, 150, 150))
 
         # 5. 周期上报：无目标也发 detected=0，保证 ESP 链路在线
         if time.ticks_diff(now, last_det) >= DETECTION_MS:
@@ -355,7 +285,7 @@ try:
             det_seq = (det_seq + 1) & 0xFF
             last_det = now
 
-        display.show(img)
+        Display.show_image(img)
         time.sleep_ms(5)
 
 except KeyboardInterrupt:
