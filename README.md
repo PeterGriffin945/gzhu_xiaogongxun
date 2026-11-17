@@ -15,6 +15,7 @@ helloworld/
 ├── sdkconfig.defaults          # FreeRTOS 1000Hz / 1.5MB app 分区 / USB 控制台等默认配置
 ├── README.md
 ├── docs/
+│   ├── ARCHITECTURE.md         # ★ 代码组织与架构总览（交接 / 外部咨询）
 │   └── DRIVER_API.md           # ★ 驱动接口手册（二次开发 / 其他 agent 调用）
 ├── k230/                       # K230D / CanMV 视觉端
 │   ├── config.py               # UART、心跳、检测周期、LAB 阈值、ROI
