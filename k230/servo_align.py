@@ -11,9 +11,12 @@
 #   2. 通过 PORT1（UART1，GPIO40/41，115200 8N1）与 ESP32-S3 通信
 #   3. 协议：A5 5A + ver/type/seq/len + payload + CRC8（CRC 不含同步字）
 #      命令 COMMAND / ACK / 心跳 / 80ms 周期 DETECTION（绝对坐标）
-#   4. MATERIAL / RING 分区 ROI；IDLE 时做预览检测但不向 ESP 上报
+#   4. MATERIAL / RING 分区 ROI；IDLE 时做预览检测并以 mode=0 上报
 #
-# 接线：K230 GPIO40(TX) → ESP GPIO44(RX)，K230 GPIO41(RX) ← ESP GPIO43(TX)，共地。
+# 接线（PORT1 = UART1，官方例程/原理图确认）：
+#   K230 PORT1 GPIO40(TX) → ESP GPIO44(RX)
+#   K230 PORT1 GPIO41(RX) ← ESP GPIO43(TX)
+#   两板必须共地。
 import time
 import math
 import struct
@@ -41,6 +44,19 @@ STRICT_ROI = False       # True = 只认 ROI；False = ROI 无目标时回退全
 MODE_IDLE, MODE_MATERIAL, MODE_RING, MODE_TRAY = 0, 1, 2, 3
 COLOR_UNKNOWN, COLOR_RED, COLOR_GREEN, COLOR_BLUE = 0, 1, 2, 3
 TYPE_COMMAND, TYPE_HEARTBEAT, TYPE_ACK, TYPE_DETECTION = 0x01, 0x02, 0x03, 0x10
+
+# ========================= 串口端口选择 =========================
+# 官方《UART 实验》与原理图确认：
+#   PORT1（PH 扩展串口1）= UART1：GPIO40=TXD，GPIO41=RXD
+#   PORT2（PH 扩展串口2）= UART2：GPIO44=TXD，GPIO45=RXD
+# 当前接 ESP32-S3 的 GPIO43/44，请使用 PORT1（下面默认值）。
+# 若改接 PORT2：UART_ID=UART.UART2、TX=44、RX=45、函数改 UART2_TXD/RXD。
+UART_ID = UART.UART1
+UART_TX_PIN = 40
+UART_RX_PIN = 41
+UART_TX_FUNC = FPIOA.UART1_TXD
+UART_RX_FUNC = FPIOA.UART1_RXD
+LINK_DEBUG = False       # True: 在 IDE 控制台打印收发统计（不写协议串口）
 
 # ROI 为 VGA(640x480) 坐标 (x, y, w, h)
 PROFILES = {
@@ -143,12 +159,12 @@ def detect_blobs(img, profile, use_roi):
 
 
 # ========================= 硬件初始化（官方例程写法） =========================
-# PORT1：GPIO40=UART1_TXD，GPIO41=UART1_RXD
+# PORT1 / UART1：GPIO40=TXD，GPIO41=RXD
 fpioa = FPIOA()
-fpioa.set_function(40, FPIOA.UART1_TXD)
-fpioa.set_function(41, FPIOA.UART1_RXD)
+fpioa.set_function(UART_TX_PIN, UART_TX_FUNC)
+fpioa.set_function(UART_RX_PIN, UART_RX_FUNC)
 
-uart = UART(UART.UART1, baudrate=115200,
+uart = UART(UART_ID, baudrate=115200,
             bits=UART.EIGHTBITS, parity=UART.PARITY_NONE,
             stop=UART.STOPBITS_ONE)
 
@@ -168,8 +184,10 @@ time.sleep(2)                            # 等待自动曝光
 
 
 def uart_send(raw):
+    global tx_frames
     try:
         uart.write(raw)
+        tx_frames += 1
     except Exception:
         pass
 
@@ -181,6 +199,10 @@ ack_seq = 0
 hb_seq = 0
 last_det = 0
 last_hb = time.ticks_ms()
+last_esp_ms = 0
+tx_frames = 0
+rx_frames = 0
+last_stat_ms = 0
 stable_color = COLOR_UNKNOWN
 stable_count = 0
 
@@ -197,7 +219,11 @@ try:
         except Exception:
             incoming = None
         if incoming:
-            for msg_type, seq, payload in parse_frames(incoming):
+            frames = parse_frames(incoming)
+            if frames:
+                last_esp_ms = now
+                rx_frames += len(frames)
+            for msg_type, seq, payload in frames:
                 if msg_type == TYPE_COMMAND and len(payload) == 1 \
                         and payload[0] <= MODE_TRAY:
                     if payload[0] != mode:
@@ -277,6 +303,13 @@ try:
         # 但网页 vision/aim 面板在待机时也能看到物料与建议移动方向。
         report = detected
 
+        esp_age = time.ticks_diff(now, last_esp_ms) if last_esp_ms else 99999
+        link_ok = esp_age <= 2000
+        if LINK_DEBUG and time.ticks_diff(now, last_stat_ms) >= 2000:
+            print("k230 link: tx=%d rx=%d esp_age=%dms mode=%d"
+                  % (tx_frames, rx_frames, esp_age, mode))
+            last_stat_ms = now
+
         # 5. 屏幕显示
         if detected:
             name, ui_color = COLOR_STYLES.get(color, ("UNKNOWN", (255, 255, 255)))
@@ -305,8 +338,12 @@ try:
             img.draw_string_advanced(10, 38, 18,
                                      "check THRESHOLDS / ROI / min_area",
                                      color=(150, 150, 150))
+        img.draw_string_advanced(10, FRAME_H - 52, 18,
+                                 "PORT1 UART1 115200  ESP %s"
+                                 % ("OK" if link_ok else "WAIT"),
+                                 color=(0, 255, 0) if link_ok else (255, 165, 0))
         img.draw_string_advanced(10, FRAME_H - 28, 18,
-                                 "PORT1 UART1 115200  area:%d" % area,
+                                 "tx:%d rx:%d  area:%d" % (tx_frames, rx_frames, area),
                                  color=(140, 140, 140))
 
         # 6. 周期上报：无目标也发，保持 ESP 链路在线
