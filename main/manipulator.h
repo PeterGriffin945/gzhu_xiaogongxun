@@ -27,15 +27,18 @@ typedef struct {
     int32_t z_tray;
     int32_t z_ground_place;
     int32_t z_max;
-    uint16_t base_stow;     /* 逻辑角度 0~360（底座按 360° 行程标定） */
+    uint16_t base_stow;     /* MG996R 180° 位置舵机，绝对角度 0~180 */
     uint16_t base_pick;
     uint16_t base_tray;
     uint16_t base_place;
-    uint8_t gripper_open;
-    uint8_t gripper_closed;
-    /* CH0 为 360° 连续旋转舵机：用速度角 + 时间控制转角 */
-    uint8_t base_speed_angle;   /* <90 正转，>90 反转 */
-    uint16_t base_sweep_ms;     /* 逻辑 0~180° 行程时间 */
+    /* CH8 夹爪为连续旋转舵机：开/合各用一个速度角 + 通电时间 */
+    uint8_t gripper_open;       /* 张开方向速度角（<90 或 >90，按机械方向标定） */
+    uint8_t gripper_closed;     /* 夹紧方向速度角 */
+    uint16_t gripper_open_ms;   /* 张开通电时间 */
+    uint16_t gripper_close_ms;  /* 夹紧通电时间（建议顶到限位后再多 150~250ms） */
+    /* CH0 底座已改为 180° 位置舵机；以下字段仅为旧连续舵机保留，不再生效 */
+    uint8_t base_speed_angle;
+    uint16_t base_sweep_ms;
     uint16_t base_settle_ms;
     uint16_t gripper_settle_ms;
     float lift_speed_sps;

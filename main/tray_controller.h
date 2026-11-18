@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define TRAY_SLOT_COUNT 6
+#define TRAY_SLOT_COUNT 3   /* 实物托盘 3 槽，每格 120° */
 
 typedef enum {
     TRAY_MOTION_IDLE = 0,

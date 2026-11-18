@@ -64,26 +64,9 @@ void manipulator_configure(const manipulator_config_t *config)
     }
     s_config = *config;
 
-    /* 夹爪软限位 = 标定的开/合角度区间，越界命令一律拒绝/夹紧，
-       避免手动或脚本把夹爪压到机械极限。 */
-    int lo = (config->gripper_open < config->gripper_closed)
-                 ? config->gripper_open : config->gripper_closed;
-    int hi = (config->gripper_open < config->gripper_closed)
-                 ? config->gripper_closed : config->gripper_open;
-    /* 留 10° 示教余量，方便把夹爪摆到新的开/合位置再记录 */
-    lo -= 10;
-    hi += 10;
-    if (lo < 0) {
-        lo = 0;
-    }
-    if (hi > 180) {
-        hi = 180;
-    }
-    if (lo < hi) {
-        lu9685_set_limits_deg(LU9685_CH_GRIPPER, (float)lo, (float)hi);
-    }
-    /* 底座最多一圈 360° */
-    lu9685_set_limits_deg(LU9685_CH_BASE, SERVO_BASE_MIN_DEG, SERVO_BASE_MAX_DEG);
+    /* CH0 已换成 MG996R 180° 位置舵机：限制在 0~180° 绝对角度。
+       CH8 是连续舵机，不再设置角度软限位（开合方向/时间由 gripper_* 标定）。 */
+    lu9685_set_limits_deg(LU9685_CH_BASE, 0.0f, 180.0f);
 }
 
 esp_err_t manipulator_start(manipulator_operation_t operation)
@@ -115,17 +98,20 @@ esp_err_t manipulator_start(manipulator_operation_t operation)
     return ESP_OK;
 }
 
-static esp_err_t start_servo(uint8_t channel, uint8_t angle, uint16_t settle_ms)
+/* CH8 夹爪是连续旋转舵机：按“速度角 + 通电时间”开合，到点自动回中位停止。 */
+static esp_err_t start_gripper(uint8_t speed_angle, uint16_t duration_ms,
+                               uint16_t settle_ms)
 {
-    esp_err_t err = lu9685_set_angle(channel, angle);
+    esp_err_t err = lu9685_pulse_start(LU9685_CH_GRIPPER, speed_angle,
+                                       duration_ms, -1);
     if (err == ESP_OK) {
         s_wait_servo = true;
-        s_wait_until_ms = now_ms() + settle_ms;
+        s_wait_until_ms = now_ms() + duration_ms + settle_ms;
     }
     return err;
 }
 
-/* CH0 底座是连续旋转舵机：按角度差换算转动时间，到点自动停在中位。 */
+/* CH0 底座：180° 位置舵机，move_timed 在位置模式下会直接写绝对角度。 */
 static esp_err_t start_base(uint16_t angle, uint16_t settle_ms)
 {
     uint32_t duration = 0;
@@ -153,9 +139,11 @@ static esp_err_t start_action(manipulator_action_t action)
         case ACTION_BASE_PLACE:
             return start_base(s_config.base_place, s_config.base_settle_ms);
         case ACTION_GRIPPER_OPEN:
-            return start_servo(LU9685_CH_GRIPPER, s_config.gripper_open, s_config.gripper_settle_ms);
+            return start_gripper(s_config.gripper_open, s_config.gripper_open_ms,
+                                 s_config.gripper_settle_ms);
         case ACTION_GRIPPER_CLOSED:
-            return start_servo(LU9685_CH_GRIPPER, s_config.gripper_closed, s_config.gripper_settle_ms);
+            return start_gripper(s_config.gripper_closed, s_config.gripper_close_ms,
+                                 s_config.gripper_settle_ms);
         case ACTION_Z_TRANSPORT:
             s_z_target = s_config.z_transport;
             break;

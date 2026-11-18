@@ -527,12 +527,13 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         "\"dbg\":%d,\"cross\":%d,\"pk\":%d,"
         "\"cfgok\":%d,\"zok\":%d,\"picked\":%d,\"placed\":%d,\"align\":%d,"
         "\"color\":%d,\"required\":%d,\"zpos\":%" PRId32 ",\"state_ms\":%" PRId64 ",\"run_ms\":%" PRId64 ","
-        "\"tray\":{\"zero\":%d,\"slot\":%d,\"target\":%d,\"motion\":%d,\"speed\":%d,\"ms\":%" PRIu32 ",\"colors\":[%d,%d,%d,%d,%d,%d]},"
+        "\"tray\":{\"zero\":%d,\"slot\":%d,\"target\":%d,\"motion\":%d,\"speed\":%d,\"ms\":%" PRIu32 ",\"colors\":[%d,%d,%d]},"
         "\"link\":{\"online\":%d,\"mode\":%d,\"ack\":%d,\"frames\":%" PRIu32 "},"
         "\"vision\":{\"mode\":%d,\"color\":%d,\"detected\":%d,\"stable\":%d,\"cx\":%d,\"cy\":%d,\"area\":%d,\"conf\":%d,\"age\":%" PRId64 "},"
         "\"aim\":{\"dx\":%d,\"dy\":%d,\"mmx\":%.1f,\"mmy\":%.1f,\"dist\":%.1f,\"aligned\":%d,\"tol\":%d},"
         "\"cfg\":{\"zpick\":%" PRId32 ",\"ztray\":%" PRId32 ",\"zplace\":%" PRId32 ",\"zmax\":%" PRId32 ","
         "\"bstow\":%d,\"bpick\":%d,\"btray\":%d,\"bplace\":%d,\"gopen\":%d,\"gclose\":%d,"
+        "\"gopenms\":%d,\"gclosems\":%d,"
         "\"bms\":%d,\"gms\":%d,\"bspeed\":%d,\"bsweep\":%d,\"lsps\":%.1f,\"mcx\":%d,\"mcy\":%d,\"rcx\":%d,\"rcy\":%d,"
         "\"tol\":%d,\"minconf\":%d,\"maxiter\":%d,\"xsign\":%d,\"ysign\":%d,\"nudge\":%.2f,\"asps\":%.1f,"
         "\"tspeed\":%d,\"tms\":%" PRIu32 ",\"sblack\":%d,\"sconfirm\":%d,\"sclear\":%d,\"srearm\":%d,\"sinterval\":%" PRIu32 "}}",
@@ -543,8 +544,8 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         st.state_elapsed_ms, st.run_elapsed_ms,
         st.tray.zero_valid ? 1 : 0, st.tray.current_slot, st.tray.target_slot,
         st.tray.motion, st.tray.speed_angle, st.tray.index_duration_ms,
-        st.tray.colors[0], st.tray.colors[1], st.tray.colors[2], st.tray.colors[3],
-        st.tray.colors[4], st.tray.colors[5], k230_link_online() ? 1 : 0,
+        st.tray.colors[0], st.tray.colors[1], st.tray.colors[2],
+        k230_link_online() ? 1 : 0,
         st.link.requested_mode, st.link.ack_mode, st.link.valid_frames,
         st.vision.mode, st.vision.color, st.vision.detected ? 1 : 0, st.vision.stable ? 1 : 0,
         st.vision.cx, st.vision.cy, st.vision.area, st.vision.confidence,
@@ -553,7 +554,8 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         cfg.manipulator.z_ground_pick, cfg.manipulator.z_tray, cfg.manipulator.z_ground_place,
         cfg.manipulator.z_max, cfg.manipulator.base_stow, cfg.manipulator.base_pick,
         cfg.manipulator.base_tray, cfg.manipulator.base_place, cfg.manipulator.gripper_open,
-        cfg.manipulator.gripper_closed, cfg.manipulator.base_settle_ms,
+        cfg.manipulator.gripper_closed, cfg.manipulator.gripper_open_ms,
+        cfg.manipulator.gripper_close_ms, cfg.manipulator.base_settle_ms,
         cfg.manipulator.gripper_settle_ms, cfg.manipulator.base_speed_angle,
         cfg.manipulator.base_sweep_ms, cfg.manipulator.lift_speed_sps,
         cfg.material_target_cx, cfg.material_target_cy, cfg.ring_target_cx, cfg.ring_target_cy,
@@ -644,6 +646,8 @@ static esp_err_t competition_config_handler(httpd_req_t *req)
     READ_CFG_INT("bplace", cfg.manipulator.base_place);
     READ_CFG_INT("gopen", cfg.manipulator.gripper_open);
     READ_CFG_INT("gclose", cfg.manipulator.gripper_closed);
+    READ_CFG_INT("gopenms", cfg.manipulator.gripper_open_ms);
+    READ_CFG_INT("gclosems", cfg.manipulator.gripper_close_ms);
     READ_CFG_INT("bms", cfg.manipulator.base_settle_ms);
     READ_CFG_INT("gms", cfg.manipulator.gripper_settle_ms);
     READ_CFG_INT("bspeed", cfg.manipulator.base_speed_angle);
@@ -711,12 +715,9 @@ static esp_err_t competition_teach_handler(httpd_req_t *req)
     } else if (strcmp(step, "bplace") == 0) {
         value = lroundf(lu9685_get_pos_deg(LU9685_CH_BASE));
         cfg.manipulator.base_place = (uint16_t)value;
-    } else if (strcmp(step, "gopen") == 0) {
-        value = lroundf(lu9685_get_pos_deg(LU9685_CH_GRIPPER));
-        cfg.manipulator.gripper_open = (uint8_t)value;
-    } else if (strcmp(step, "gclose") == 0) {
-        value = lroundf(lu9685_get_pos_deg(LU9685_CH_GRIPPER));
-        cfg.manipulator.gripper_closed = (uint8_t)value;
+    } else if (strcmp(step, "gopen") == 0 || strcmp(step, "gclose") == 0) {
+        /* 夹爪已是连续舵机：没有“当前角度”可示教，请在配置里直接填速度角与通电时间 */
+        return send_err(req, "{\"ok\":0,\"msg\":\"gripper is continuous: set speed/time in config\"}");
     } else if (strcmp(step, "zpick") == 0) {
         value = stepper_get_position(AXIS_LIFT);
         if (value < 0) {

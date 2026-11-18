@@ -218,16 +218,17 @@ esp_err_t lu9685_init(void)
         s_pulse[i].active = false;
         s_pulse[i].faulted = false;
     }
-    /* CH0 底座：连续旋转舵机，用“速度角 + 持续时间”定时点动；
-       逻辑行程 0~360°，最多一圈，单次时长受 SERVO_MAX_JOG_MS 限制。 */
-    s_mode[LU9685_CH_BASE] = LU9685_MODE_CONTINUOUS;
-    s_travel_deg[LU9685_CH_BASE] = SERVO_BASE_TRAVEL_DEG;
-    s_min_deg[LU9685_CH_BASE] = SERVO_BASE_MIN_DEG;
-    s_max_deg[LU9685_CH_BASE] = SERVO_BASE_MAX_DEG;
+    /* CH0 底座：MG996R 180° 位置舵机，写绝对角度即到位并保持 */
+    s_mode[LU9685_CH_BASE] = LU9685_MODE_POSITION;
+    s_travel_deg[LU9685_CH_BASE] = 180.0f;
+    s_min_deg[LU9685_CH_BASE] = 0.0f;
+    s_max_deg[LU9685_CH_BASE] = 180.0f;
+    s_pos_deg[LU9685_CH_BASE] = 90.0f;
     s_target[LU9685_CH_BASE] = 90;
-    /* CH8 夹爪：位置舵机，软限位随后由机械臂标定的开/合角度收紧 */
+    /* CH8 夹爪：旧 MG996 连续旋转舵机，用速度角 + 通电时间开合 */
+    s_mode[LU9685_CH_GRIPPER] = LU9685_MODE_CONTINUOUS;
     s_travel_deg[LU9685_CH_GRIPPER] = SERVO_GRIPPER_TRAVEL_DEG;
-    /* CH4 物料盘：保留连续旋转 + 定时分度 */
+    /* CH4 物料盘：MG90S 连续旋转 + 定时分度（3 槽，每格 120°） */
     s_mode[LU9685_CH_TRAY] = LU9685_MODE_CONTINUOUS;
 
     BaseType_t ret = xTaskCreatePinnedToCore(lu9685_pulse_task, "srv_pulse", 4096, NULL, 3, NULL, 1);
@@ -269,9 +270,9 @@ esp_err_t lu9685_init(void)
         return err;
     }
 
-    lu9685_set_angle(LU9685_CH_BASE, LU9685_DEFAULT_CENTER);   /* 连续舵机中位停转 */
+    lu9685_set_angle(LU9685_CH_BASE, LU9685_DEFAULT_CENTER);   /* 位置舵机回中位 */
     lu9685_set_angle(LU9685_CH_TRAY, LU9685_DEFAULT_CENTER);   /* 连续舵机中位停转 */
-    lu9685_move_deg(LU9685_CH_GRIPPER, 90.0f);
+    lu9685_set_angle(LU9685_CH_GRIPPER, LU9685_DEFAULT_CENTER);/* 连续舵机中位停转 */
     ESP_LOGI(TAG, "LU9685 @0x%02X ready", s_addr);
     return ESP_OK;
 }

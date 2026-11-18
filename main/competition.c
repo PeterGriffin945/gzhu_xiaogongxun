@@ -25,6 +25,10 @@
 #define COMPETITION_BRAKE_TIMEOUT_MS 1800
 #define COMPETITION_BRAKE_MARGIN_MS 800
 #define COMPETITION_SENSOR_TIMEOUT_MS 500
+#define COMPETITION_LINE_LOST_TIMEOUT_MS 3000
+/* 1 = 比赛全自动（检测到站点直接进入识别/对位/抓放）；
+   0 = 调试用“逢站点停车，等待网页执行/跳过”。 */
+#define COMPETITION_AUTO_MODE 1
 
 /* 调试暂停恢复：向前定步跨出横线的距离（微步）与峰值速度。
    1500 微步 ≈ 96mm，足够让 8 路探头离开常见 20~30mm 的站点线。 */
@@ -56,6 +60,7 @@ static int64_t s_run_started_ms;
 static int64_t s_vision_after_ms;
 static uint32_t s_sensor_seq;
 static int64_t s_sensor_changed_ms;
+static int64_t s_line_seen_ms;
 
 /* 半自动调试抓取：无锁标志供 Web 手动命令查询，暂停计时不计入 6 分钟总时限 */
 static volatile bool s_debug_paused;
@@ -84,8 +89,10 @@ static void default_config(competition_config_t *config)
             .base_pick = 0,
             .base_tray = 180,
             .base_place = 0,
-            .gripper_open = 30,
-            .gripper_closed = 80,
+            .gripper_open = 60,          /* 连续舵机：张开方向速度角 */
+            .gripper_closed = 120,       /* 夹紧方向速度角 */
+            .gripper_open_ms = 500,
+            .gripper_close_ms = 700,     /* 顶到限位后再多夹一会儿 */
             .base_speed_angle = ARM_BASE_SPEED_ANGLE_DEFAULT,
             .base_sweep_ms = ARM_BASE_SWEEP_MS_DEFAULT,
             .base_settle_ms = 700,   /* 位置舵机按实际行程留足到位时间 */
@@ -101,10 +108,10 @@ static void default_config(competition_config_t *config)
         .max_align_iterations = 5,
         .vision_x_sign = 1,
         .vision_y_sign = 1,
-        .align_nudge_mm = 3.0f,
+        .align_nudge_mm = 25.0f,   /* 单次对位最大位移 mm */
         .align_speed_sps = 200.0f * WHEEL_MICROSTEP,
         .tray_speed_angle = 60,
-        .tray_index_ms = 500,
+        .tray_index_ms = 1000,       /* 3 槽，每格 120°；按实车再标定 */
     };
     station_detector_t detector;
     station_detector_init(&detector);
@@ -119,9 +126,11 @@ static bool valid_config(const competition_config_t *config)
         m->z_ground_pick < 0 || m->z_ground_pick > m->z_max ||
         m->z_tray < 0 || m->z_tray > m->z_max ||
         m->z_ground_place < 0 || m->z_ground_place > m->z_max ||
-        m->base_stow > 360 || m->base_pick > 360 || m->base_tray > 360 ||
-        m->base_place > 360 || m->gripper_open > 180 || m->gripper_closed > 180 ||
+        m->base_stow > 180 || m->base_pick > 180 || m->base_tray > 180 ||
+        m->base_place > 180 || m->gripper_open > 180 || m->gripper_closed > 180 ||
         m->gripper_open == m->gripper_closed || m->base_settle_ms > 5000 ||
+        m->gripper_open_ms < 50 || m->gripper_open_ms > 3000 ||
+        m->gripper_close_ms < 50 || m->gripper_close_ms > 3000 ||
         m->base_speed_angle < 10 || m->base_speed_angle > 170 ||
         m->base_sweep_ms < 200 || m->base_sweep_ms > 10000 ||
         m->gripper_settle_ms > 5000 || !isfinite(m->lift_speed_sps) ||
@@ -239,6 +248,7 @@ static bool enter_state(void)
             station_detector_reset(&s_station, now_ms());
             s_sensor_seq = ads1115_get_seq();
             s_sensor_changed_ms = now_ms();
+            s_line_seen_ms = now_ms();
             chassis_set_mode(CHASSIS_MODE_LINE);
             break;
         case COMPETITION_SOURCE_IDENTIFY:
@@ -307,6 +317,16 @@ static void update_travel(bool source)
         return;
     }
 
+    /* 全自动比赛没有人盯车：丢线 3s 必须停车中止，不能保持基础速度盲走。 */
+    chassis_status_t chassis_st;
+    chassis_get_status(&chassis_st);
+    if (chassis_st.line_seen) {
+        s_line_seen_ms = now_ms();
+    } else if (now_ms() - s_line_seen_ms > COMPETITION_LINE_LOST_TIMEOUT_MS) {
+        abort_locked(COMPETITION_ERROR_SENSOR);
+        return;
+    }
+
     uint8_t mask = 0;
     for (int i = 0; i < LINE_SENSOR_COUNT; ++i) {
         if (line_follow_is_black(volts[i])) {
@@ -314,12 +334,18 @@ static void update_travel(bool source)
         }
     }
     if (station_detector_update(&s_station, mask, seq, now_ms())) {
-        /* 调试策略：逢横线即停，交给 Web 人工完成对位与抓放 */
+#if COMPETITION_AUTO_MODE
+        /* 比赛模式：停车后自动进入识别 → 对位 → 抓/放 */
+        chassis_stop();
+        change_state(source ? COMPETITION_SOURCE_BRAKE : COMPETITION_TARGET_BRAKE);
+#else
+        /* 调试模式：逢横线即停，交给 Web 人工完成对位与抓放 */
         s_paused_from = source ? COMPETITION_SOURCE_TRAVEL
                                : COMPETITION_TARGET_TRAVEL;
         s_pause_kind = source ? DEBUG_STATION_SOURCE : DEBUG_STATION_TARGET;
         chassis_stop();
         change_state(COMPETITION_DEBUG_PAUSE);
+#endif
     }
 }
 
@@ -482,15 +508,36 @@ static void update_alignment(bool source)
         return;
     }
 
+    /* 像素误差按 mm/px 换算成一次性位移，单步限幅；比固定小步长收敛快得多。 */
+    float step_mm = s_config.align_nudge_mm;
+    if (step_mm < 1.0f) {
+        step_mm = 1.0f;
+    } else if (step_mm > 50.0f) {
+        step_mm = 50.0f;
+    }
     float dx = 0.0f;
     float dy = 0.0f;
     if (abs(error_x) > tolerance) {
-        dx = ((error_x > 0) ? s_config.align_nudge_mm : -s_config.align_nudge_mm) *
-             s_config.vision_x_sign;
+        dx = (float)error_x * VISION_MM_PER_PX * (float)s_config.vision_x_sign;
+        if (dx > step_mm) {
+            dx = step_mm;
+        } else if (dx < -step_mm) {
+            dx = -step_mm;
+        }
+        if (fabsf(dx) < 1.0f) {
+            dx = copysignf(1.0f, dx);
+        }
     }
     if (abs(error_y) > tolerance) {
-        dy = ((error_y > 0) ? s_config.align_nudge_mm : -s_config.align_nudge_mm) *
-             s_config.vision_y_sign;
+        dy = (float)error_y * VISION_MM_PER_PX * (float)s_config.vision_y_sign;
+        if (dy > step_mm) {
+            dy = step_mm;
+        } else if (dy < -step_mm) {
+            dy = -step_mm;
+        }
+        if (fabsf(dy) < 1.0f) {
+            dy = copysignf(1.0f, dy);
+        }
     }
     esp_err_t err = chassis_start_translation(dx, dy, s_config.align_speed_sps);
     if (err != ESP_OK) {

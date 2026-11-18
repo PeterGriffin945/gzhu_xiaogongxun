@@ -210,10 +210,10 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
     </div>
 
     <div class="srv">
-      <div class="top"><span>底座旋转 CH0 · 20kg（0~360°）</span><b id="a0">90°</b></div>
+      <div class="top"><span>底座旋转 CH0 · MG996R 180° 位置舵机</span><b id="a0">90°</b></div>
       <div class="srow">
         <button data-rng="s0" data-d="-1">−1°</button>
-        <input type="range" id="s0" min="0" max="360" step="1" value="90">
+        <input type="range" id="s0" min="0" max="180" step="1" value="90">
         <button data-rng="s0" data-d="1">+1°</button>
         <button class="stop" data-rng="s0" data-mid="1">中位</button>
       </div>
@@ -231,24 +231,21 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <button class="ghost" data-slot="0">slot 0</button>
         <button class="ghost" data-slot="1">slot 1</button>
         <button class="ghost" data-slot="2">slot 2</button>
-        <button class="ghost" data-slot="3">slot 3</button>
-        <button class="ghost" data-slot="4">slot 4</button>
-        <button class="ghost" data-slot="5">slot 5</button>
       </div>
     </div>
 
     <div class="srv">
-      <div class="top"><span>夹爪开合 CH8 · 20kg</span><b id="a8">90°</b></div>
+      <div class="top"><span>夹爪 CH8 · 连续舵机（开合时间在标定里设）</span><b id="a8">90°</b></div>
       <div class="srow">
-        <button data-rng="s8" data-d="-1">−1°</button>
-        <input type="range" id="s8" min="0" max="180" step="1" value="90">
-        <button data-rng="s8" data-d="1">+1°</button>
-        <button class="stop" data-rng="s8" data-mid="1">中位</button>
+        <button data-rng="s8" data-d="-1" disabled>−1°</button>
+        <input type="range" id="s8" min="0" max="180" step="1" value="90" disabled>
+        <button data-rng="s8" data-d="1" disabled>+1°</button>
+        <button class="stop" data-rng="s8" data-mid="1" disabled>中位</button>
       </div>
     </div>
 
     <div class="srv">
-      <div class="top"><span>位置舵机步进（CH0 / CH8）</span><b id="stepInfo">15°</b></div>
+      <div class="top"><span>位置舵机步进（仅 CH0 底座）</span><b id="stepInfo">15°</b></div>
       <div class="row"><label>步进角（°）</label>
         <input id="stepDeg" type="number" min="1" max="90" step="1" value="15"
                style="width:90px;padding:6px;border-radius:8px;border:1px solid #273a4c;background:#17222e;color:#e6edf3">
@@ -256,8 +253,6 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <div class="btnrow">
         <button id="baseStepMinus">CH0 −步进</button>
         <button id="baseStepPlus">CH0 +步进</button>
-        <button id="gripStepMinus">CH8 −步进</button>
-        <button id="gripStepPlus">CH8 +步进</button>
       </div>
     </div>
 
@@ -282,12 +277,12 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
 
     <div class="hint">
       滑块拖动时 30ms 节流实时下发；鼠标悬停滑块滚动滚轮可按 1° 微调。<br>
-      CH0 底座是<b>连续旋转舵机</b>，用“角度差 × 标定用时”做定时点动：
-      写目标角度后按标定的速度角与 180° 用时转动，到点自动回中位停止，
-      单次最长 10 秒；逻辑行程 0~360°，超出一圈会被夹紧。
-      CH8 夹爪是位置舵机（软限位取标定的开/合角度）。
-      用“位置舵机步进”按指定角度（默认 15°）一点点移动。<br>
-      CH0 的速度角 / 180° 用时在比赛卡片标定区调整（bspeed / bsweep）。
+      <b>CH0 底座</b>：MG996R <b>180° 位置舵机</b>，滑块直接写绝对角度 0~180°，
+      用“位置舵机步进”可按 1~90° 微调。<br>
+      <b>CH8 夹爪</b>：连续旋转舵机，张开/夹紧的<b>速度角与通电时间</b>在比赛卡片标定区设置
+      （gopen / gclose / gopenms / gclosems），到点自动回中位停止。<br>
+      <b>CH4 物料盘</b>：连续旋转舵机，3 槽每格 120°，用 slot 按钮分度；
+      速度角与每格时间在标定区设置（tspeed / tms）。
     </div>
   </section>
 
@@ -308,8 +303,6 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <option value="bpick">底座地面抓取角</option>
         <option value="btray">底座盘位角</option>
         <option value="bplace">底座靶环角</option>
-        <option value="gopen">夹爪张开角</option>
-        <option value="gclose">夹爪闭合角</option>
         <option value="zpick">地面抓取 Z</option>
         <option value="ztray">盘内取放 Z</option>
         <option value="zplace">靶环放置 Z</option>
@@ -323,7 +316,7 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
     <div class="btnrow">
       <button id="zZero">设当前 Z 为运输零点</button>
       <button id="trayZero">设当前盘位为 slot0</button>
-      <button id="trayNext">正转 60°</button>
+      <button id="trayNext">下一格 120°</button>
     </div>
     <div class="statusline" id="aimInfo" style="margin-top:8px;font-size:14px;color:var(--dim)">物料：未检测到</div>
     <div class="statusline" id="visionInfo" style="margin-top:6px">K230 等待状态…</div>
@@ -338,11 +331,11 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <label class="field">底座地面抓取角<input type="number" data-cfg="bpick"></label>
         <label class="field">底座盘位角<input type="number" data-cfg="btray"></label>
         <label class="field">底座靶环角<input type="number" data-cfg="bplace"></label>
-        <label class="field">夹爪张开角<input type="number" data-cfg="gopen"></label>
-        <label class="field">夹爪闭合角<input type="number" data-cfg="gclose"></label>
+        <label class="field">夹爪张开速度角<input type="number" data-cfg="gopen"></label>
+        <label class="field">夹爪夹紧速度角<input type="number" data-cfg="gclose"></label>
+        <label class="field">张开通电 ms<input type="number" data-cfg="gopenms"></label>
+        <label class="field">夹紧通电 ms<input type="number" data-cfg="gclosems"></label>
         <label class="field">底座稳定 ms<input type="number" data-cfg="bms"></label>
-        <label class="field">底座速度角（&lt;90 正转）<input type="number" data-cfg="bspeed"></label>
-        <label class="field">底座 180° 用时 ms<input type="number" data-cfg="bsweep"></label>
         <label class="field">夹爪稳定 ms<input type="number" data-cfg="gms"></label>
         <label class="field">Z 定步速度<input type="number" data-cfg="lsps"></label>
         <label class="field">物料基准 X<input type="number" data-cfg="mcx"></label>
@@ -354,10 +347,10 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <label class="field">最大修正次数<input type="number" data-cfg="maxiter"></label>
         <label class="field">X 修正方向 ±1<input type="number" data-cfg="xsign"></label>
         <label class="field">Y 修正方向 ±1<input type="number" data-cfg="ysign"></label>
-        <label class="field">单次修正 mm<input type="number" step="0.5" data-cfg="nudge"></label>
+        <label class="field">单次对位最大位移 mm<input type="number" step="0.5" data-cfg="nudge"></label>
         <label class="field">修正轮速步/秒<input type="number" data-cfg="asps"></label>
         <label class="field">CH4 正转速度角<input type="number" data-cfg="tspeed"></label>
-        <label class="field">CH4 每 60° ms<input type="number" data-cfg="tms"></label>
+        <label class="field">CH4 每格 120° ms<input type="number" data-cfg="tms"></label>
         <label class="field">横线最少黑探头<input type="number" data-cfg="sblack"></label>
         <label class="field">横线确认帧数<input type="number" data-cfg="sconfirm"></label>
         <label class="field">离站最多黑探头<input type="number" data-cfg="sclear"></label>
@@ -606,8 +599,6 @@ $("stepDeg").oninput = () => {
 };
 $("baseStepMinus").onclick = () => stepServo(0, -1);
 $("baseStepPlus").onclick = () => stepServo(0, 1);
-$("gripStepMinus").onclick = () => stepServo(8, -1);
-$("gripStepPlus").onclick = () => stepServo(8, 1);
 
 /* ---- 急停 / 解除 ---- */
 $("estopBtn").onclick = () => {
@@ -820,7 +811,7 @@ $("trayZero").onclick = () => {
     compCommand("/api/competition/cmd?cmd=tray_zero", "slot0 已确认，仓位已清空");
   }
 };
-$("trayNext").onclick = () => compCommand("/api/competition/cmd?cmd=tray_next", "已请求正转 60°");
+$("trayNext").onclick = () => compCommand("/api/competition/cmd?cmd=tray_next", "已请求转动一格（120°）");
 
 const cfgElements = Array.from(document.querySelectorAll("[data-cfg]"));
 cfgElements.forEach(el => {
@@ -861,7 +852,7 @@ function renderComp(j) {
     ` / 标定 ${j.cfgok ? "已确认" : "未确认"} | 故障：${j.error}`;
 
   let slots = "";
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 3; i++) {
     const color = j.tray.colors[i];
     slots += `<div class="slot ${i === j.tray.slot ? "current" : ""}">slot ${i}` +
       `<br><span class="c${color}">${colorNames[color] || "?"}</span></div>`;
