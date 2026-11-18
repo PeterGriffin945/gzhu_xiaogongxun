@@ -967,7 +967,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `/api/estop/clear` | — | 解除急停锁存 |
 | `/settings` | `save=1` | 立即保存调参到 NVS（平时约 2s 自动保存） |
 | `/api/competition` | — | 比赛状态 JSON（见 4.14.2） |
-| `/api/competition/cmd` | `cmd=start\|abort\|resume\|skip\|execute\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..5` | `execute`/`resume` 仅在 `DEBUG_PAUSE` 有效 |
+| `/api/competition/cmd` | `cmd=start\|abort\|resume\|skip\|execute\|z_zero\|confirm\|tray_zero\|tray_next\|tray_to\|debug\|vision\|odom_reset`（也接受 `action=` 别名）；`tray_to` 另需 `slot=0..2`；`debug` 需 `on=0\|1` | `execute`/`vision`/`resume` 仅在 `DEBUG_PAUSE` 有效；`debug` 运行中不可切换 |
 | `/api/competition/config` | 见 4.12.1 的字段名；`confirm=1` 同时确认 | 保存/确认标定（自动写 Flash） |
 | `/api/competition/teach` | `step=bstow\|bpick\|btray\|bplace\|gopen\|gclose\|zpick\|ztray\|zplace` | 记录当前姿态到该步骤并写 Flash |
 | `/favicon.ico` | — | 204 |
@@ -1024,7 +1024,7 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 ```json
 {
   "ok":1, "state":"MANUAL", "error":"NONE", "running":0,
-  "dbg":0, "cross":0, "pk":0,
+  "dmode":0, "dbg":0, "cross":0, "pk":0, "odom":{"x":0,"y":0},
   "cfgok":0, "zok":0, "picked":0, "placed":0, "align":0,
   "color":0, "required":0, "zpos":0, "state_ms":0, "run_ms":0,
   "tray":{"zero":0,"slot":0,"target":0,"motion":0,"speed":60,"ms":1000,
@@ -1049,7 +1049,9 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 |---|---|
 | `state/error` | 状态名 / 错误名（字符串，见 4.12） |
 | `running` | 自动流程是否运行中 |
+| `dmode` | 0 比赛模式（全自动）/ 1 调试模式（横线停车、人工遥控） |
 | `dbg` | 是否处于 `DEBUG_PAUSE` 人工抓取状态 |
+| `odom.x/y` | 自上次里程清零以来的底盘位移 mm（调试标定盲走距离） |
 | `cross` | 恢复后是否正在定步跨线（此时手动底盘命令被拒绝） |
 | `pk` | 当前暂停站点类型：0 无 / 1 物料站 / 2 靶环站 |
 | `cfgok` | 标定是否已确认 |

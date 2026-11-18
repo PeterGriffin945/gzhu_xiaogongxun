@@ -521,10 +521,13 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         aim_dist = sqrtf(aim_mmx * aim_mmx + aim_mmy * aim_mmy);
     }
 
+    float odom_x = 0.0f, odom_y = 0.0f;
+    chassis_get_odometry(&odom_x, &odom_y);
+
     char buf[4096];
     int n = snprintf(buf, sizeof(buf),
-        "{\"ok\":1,\"state\":\"%s\",\"error\":\"%s\",\"running\":%d,"
-        "\"dbg\":%d,\"cross\":%d,\"pk\":%d,"
+        "{\"ok\":1,\"state\":\"%s\",\"error\":\"%s\",\"running\":%d,\"dmode\":%d,"
+        "\"dbg\":%d,\"cross\":%d,\"pk\":%d,\"odom\":{\"x\":%.0f,\"y\":%.0f},"
         "\"cfgok\":%d,\"zok\":%d,\"picked\":%d,\"placed\":%d,\"align\":%d,"
         "\"color\":%d,\"required\":%d,\"zpos\":%" PRId32 ",\"state_ms\":%" PRId64 ",\"run_ms\":%" PRId64 ","
         "\"tray\":{\"zero\":%d,\"slot\":%d,\"target\":%d,\"motion\":%d,\"speed\":%d,\"ms\":%" PRIu32 ",\"colors\":[%d,%d,%d]},"
@@ -541,7 +544,9 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         "\"tenter\":%" PRId32 ",\"tstep\":%" PRId32 ","
         "\"sblack\":%d,\"sconfirm\":%d,\"sclear\":%d,\"srearm\":%d,\"sinterval\":%" PRIu32 "}}",
         competition_state_name(st.state), competition_error_name(st.error), st.running ? 1 : 0,
+        st.debug_mode ? 1 : 0,
         st.debug_paused ? 1 : 0, st.resume_crossing ? 1 : 0, st.pause_kind,
+        odom_x, odom_y,
         st.config_confirmed ? 1 : 0, st.z_zero_valid ? 1 : 0, st.picked_count, st.placed_count,
         st.align_iterations, st.current_color, st.required_color, st.z_position,
         st.state_elapsed_ms, st.run_elapsed_ms,
@@ -605,6 +610,16 @@ static esp_err_t competition_command_handler(httpd_req_t *req)
         if (err == ESP_ERR_INVALID_STATE) {
             return send_err(req, "{\"ok\":0,\"msg\":\"请先停止底盘/升降/物料盘再执行\"}");
         }
+    } else if (strcmp(command, "debug") == 0) {
+        int on = 0;
+        if (!query_int(req, "on", &on)) {
+            return send_err(req, "{\"ok\":0,\"msg\":\"on=0|1 required\"}");
+        }
+        err = competition_set_debug_mode(on != 0);
+    } else if (strcmp(command, "vision") == 0) {
+        err = competition_debug_vision();
+    } else if (strcmp(command, "odom_reset") == 0) {
+        chassis_reset_odometry();
     } else {
         /* 调试暂停时也允许人工转盘选槽，方便靶环站放置取料 */
         if (!manual_allowed_or_debug(req)) {
@@ -617,7 +632,7 @@ static esp_err_t competition_command_handler(httpd_req_t *req)
         } else if (strcmp(command, "tray_to") == 0) {
             int slot = -1;
             if (!query_int(req, "slot", &slot) || slot < 0 || slot >= TRAY_SLOT_COUNT) {
-                return send_err(req, "{\"ok\":0,\"msg\":\"slot=0..5 required\"}");
+                return send_err(req, "{\"ok\":0,\"msg\":\"slot=0..2 required\"}");
             }
             err = tray_controller_start_to((uint8_t)slot);
         } else {

@@ -553,3 +553,31 @@ void chassis_get_status(chassis_status_t *out)
         xSemaphoreGive(s_status_mutex);
     }
 }
+
+/* ---------------- 里程计（仅用于调试标定） ---------------- */
+static int32_t s_odom_base[4];
+
+void chassis_reset_odometry(void)
+{
+    for (int i = 0; i < 4; ++i) {
+        s_odom_base[i] = stepper_get_position((stepper_axis_t)i);
+    }
+}
+
+void chassis_get_odometry(float *dx_mm, float *dy_mm)
+{
+    float wheel_m[4];
+    for (int i = 0; i < 4; ++i) {
+        int32_t delta = stepper_get_position((stepper_axis_t)i) - s_odom_base[i];
+        wheel_m[i] = mecanum_steps_to_mps(delta);   /* steps → m */
+    }
+    /* RR/RF/LF/LR = vy ± vx：求和得 vy，交替和得 vx */
+    float vx = (wheel_m[0] - wheel_m[1] + wheel_m[2] - wheel_m[3]) * 0.25f;
+    float vy = (wheel_m[0] + wheel_m[1] + wheel_m[2] + wheel_m[3]) * 0.25f;
+    if (dx_mm != NULL) {
+        *dx_mm = vx * 1000.0f;
+    }
+    if (dy_mm != NULL) {
+        *dy_mm = vy * 1000.0f;
+    }
+}

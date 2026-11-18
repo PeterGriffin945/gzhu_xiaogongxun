@@ -77,6 +77,7 @@ typedef struct {
     competition_state_t state;
     competition_error_t error;
     bool running;
+    bool debug_mode;        /* 调试模式：检测到横线后停车，人工遥控/执行 */
     bool debug_paused;      /* 站点暂停中，允许 Web 手动接管 */
     bool resume_crossing;   /* 恢复后正在定步跨出横线 */
     uint8_t pause_kind;     /* 0 无 / 1 物料站 / 2 靶环站 */
@@ -116,6 +117,13 @@ esp_err_t competition_debug_resume(void);
  * 仅在 DEBUG_PAUSE、执行器静止且物料盘空闲时成功。全程不依赖 K230 视觉。
  */
 esp_err_t competition_debug_execute(void);
+/** 调试模式：横线停车后人工遥控/执行；比赛模式：全自动盲走+识别。 */
+bool competition_debug_mode(void);
+esp_err_t competition_set_debug_mode(bool enable);
+
+/** 调试暂停时打开 K230 识别（物料站 MATERIAL / 靶环站 RING）。 */
+esp_err_t competition_debug_vision(void);
+
 bool competition_auto_active(void);
 void competition_get_status(competition_status_t *out);
 void competition_get_config(competition_config_t *out);

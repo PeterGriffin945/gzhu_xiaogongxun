@@ -48,6 +48,10 @@ bool chassis_translation_done(void);
 void chassis_set_speeds(float chassis_sps, float lift_sps);
 void chassis_get_speeds(float *chassis_sps, float *lift_sps);
 void chassis_stop(void);
+/** 以当前四轮计数为起点，计算此后的底盘位移（mm），用于盲走距离标定。 */
+void chassis_reset_odometry(void);
+void chassis_get_odometry(float *dx_mm, float *dy_mm);
+
 void chassis_get_status(chassis_status_t *out);
 
 #ifdef __cplusplus

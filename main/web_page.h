@@ -289,6 +289,15 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
   <section class="card">
     <h2>比赛自动流程 <span id="compState" class="badge">MANUAL</span></h2>
     <div class="statusline" id="compInfo">等待状态…</div>
+    <div class="btnrow" style="margin:8px 0">
+      <button id="modeComp" class="primary active">比赛模式（全自动）</button>
+      <button id="modeDebug" class="primary">调试模式（人工）</button>
+    </div>
+    <div class="statusline" id="odomInfo" style="margin-top:4px">里程：X 0 mm / Y 0 mm</div>
+    <div class="btnrow" style="margin-top:6px">
+      <button id="odomReset" class="ghost">里程清零（横线处）</button>
+      <button id="debugVision" disabled>🔍 开启 K230 识别</button>
+    </div>
     <div class="pausebanner" id="compPauseBanner">站点触发：等待人工抓取...（抓取中）</div>
     <div class="btnrow" style="margin:10px 0">
       <button id="compStart" class="primary">▶ 启动三取三放</button>
@@ -817,6 +826,10 @@ $("trayZero").onclick = () => {
   }
 };
 $("trayNext").onclick = () => compCommand("/api/competition/cmd?cmd=tray_next", "已请求转动一格（120°）");
+$("modeComp").onclick = () => compCommand("/api/competition/cmd?cmd=debug&on=0", "已切换到比赛模式（全自动）");
+$("modeDebug").onclick = () => compCommand("/api/competition/cmd?cmd=debug&on=1", "已切换到调试模式（横线停车，人工遥控）");
+$("odomReset").onclick = () => compCommand("/api/competition/cmd?cmd=odom_reset", "里程已清零，可手动盲走测量距离");
+$("debugVision").onclick = () => compCommand("/api/competition/cmd?cmd=vision", "K230 已切换到本站识别模式");
 
 const cfgElements = Array.from(document.querySelectorAll("[data-cfg]"));
 cfgElements.forEach(el => {
@@ -848,9 +861,13 @@ function renderComp(j) {
   pauseBanner.style.display = paused ? "block" : "none";
   pauseBanner.textContent = j.cross
     ? "正在跨线，请稍候…"
-    : (isTarget
-        ? "站点触发（靶环站）：先人工对位/转盘选槽，再点“执行放置”｜可用方向键、升降和舵机"
-        : "站点触发（物料站）：人工对位后点“执行抓取”｜可用方向键、升降和舵机");
+    : (j.dmode
+        ? (isTarget
+            ? "调试模式（靶环站）：可手动遥控/盲走；开识别对准后点“执行放置”，会按颜色自动选槽"
+            : "调试模式（物料站）：可手动遥控/盲走，先点“开启 K230 识别”对准，再点“执行抓取”")
+        : (isTarget
+            ? "站点触发（靶环站）：先人工对位/转盘选槽，再点“执行放置”｜可用方向键、升降和舵机"
+            : "站点触发（物料站）：人工对位后点“执行抓取”｜可用方向键、升降和舵机"));
   $("compExecute").textContent = isTarget ? "▶ 执行放置" : "▶ 执行抓取";
   $("compExecute").disabled = !paused || !!j.cross;
   $("compResume").disabled = !paused || !!j.cross;
@@ -858,6 +875,15 @@ function renderComp(j) {
   $("compInfo").textContent = `已装 ${j.picked}/3 · 已放 ${j.placed}/3 · 运行 ${seconds}s · Z=${j.zpos} 步` +
     ` | 初始化：Z ${j.zok ? "有效" : "无效"} / 盘 ${j.tray.zero ? "有效" : "无效"}` +
     ` / 标定 ${j.cfgok ? "已确认" : "未确认"} | 故障：${j.error}`;
+
+  $("modeComp").classList.toggle("active", !j.dmode);
+  $("modeDebug").classList.toggle("active", !!j.dmode);
+  $("modeComp").disabled = !!j.running;
+  $("modeDebug").disabled = !!j.running;
+  const odom = j.odom || { x: 0, y: 0 };
+  $("odomInfo").textContent = `里程：X ${Math.round(odom.x)} mm / Y ${Math.round(odom.y)} mm` +
+    `（${j.dmode ? "调试：横线处清零后手动盲走，把 Y 填进标定" : "比赛模式"}）`;
+  $("debugVision").disabled = !j.dbg;
 
   let slots = "";
   for (let i = 0; i < 3; i++) {

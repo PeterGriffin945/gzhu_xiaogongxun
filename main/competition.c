@@ -69,6 +69,7 @@ static int32_t s_blind_mm;
 static competition_state_t s_blind_next_state = COMPETITION_MANUAL;
 
 /* 半自动调试抓取：无锁标志供 Web 手动命令查询，暂停计时不计入 6 分钟总时限 */
+static volatile bool s_debug_mode = (COMPETITION_AUTO_MODE == 0);
 static volatile bool s_debug_paused;
 static bool s_resume_pending;
 static bool s_resume_crossing;
@@ -394,18 +395,17 @@ static void update_travel(bool source)
         }
     }
     if (station_detector_update(&s_station, mask, seq, now_ms())) {
-#if COMPETITION_AUTO_MODE
-        /* 比赛模式：停车后自动进入识别 → 对位 → 抓/放 */
         chassis_stop();
-        change_state(source ? COMPETITION_SOURCE_BRAKE : COMPETITION_TARGET_BRAKE);
-#else
-        /* 调试模式：逢横线即停，交给 Web 人工完成对位与抓放 */
-        s_paused_from = source ? COMPETITION_SOURCE_TRAVEL
-                               : COMPETITION_TARGET_TRAVEL;
-        s_pause_kind = source ? DEBUG_STATION_SOURCE : DEBUG_STATION_TARGET;
-        chassis_stop();
-        change_state(COMPETITION_DEBUG_PAUSE);
-#endif
+        if (!s_debug_mode) {
+            /* 比赛模式：停车后自动盲走 → 识别 → 对位 → 抓/放 */
+            change_state(source ? COMPETITION_SOURCE_BRAKE : COMPETITION_TARGET_BRAKE);
+        } else {
+            /* 调试模式：逢横线即停，交给 Web 人工遥控/视觉标定/执行 */
+            s_paused_from = source ? COMPETITION_SOURCE_TRAVEL
+                                   : COMPETITION_TARGET_TRAVEL;
+            s_pause_kind = source ? DEBUG_STATION_SOURCE : DEBUG_STATION_TARGET;
+            change_state(COMPETITION_DEBUG_PAUSE);
+        }
     }
 }
 
@@ -638,10 +638,15 @@ static void update_manipulator_state(bool source)
         }
         s_picked_count++;
         if (s_picked_count < 3) {
-            /* 还有下一个物料：先转盘分度，再盲走到下一个物料 */
+            /* 还有下一个物料：先转盘分度 */
             change_state(COMPETITION_SOURCE_INDEX);
+        } else if (s_debug_mode) {
+            /* 调试模式：抓完 3 个后停车，人工把车开回黑线再恢复循迹 */
+            s_paused_from = COMPETITION_SOURCE_TRAVEL;
+            s_pause_kind = DEBUG_STATION_SOURCE;
+            change_state(COMPETITION_DEBUG_PAUSE);
         } else {
-            /* 3 个抓完：盲走回黑线，恢复循迹去靶环区 */
+            /* 比赛模式：盲走回黑线，恢复循迹去靶环区 */
             start_blind_move(s_config.source_exit_mm, COMPETITION_SOURCE_TRAVEL);
         }
     } else {
@@ -649,6 +654,10 @@ static void update_manipulator_state(bool source)
         s_placed_count++;
         if (s_placed_count >= 3) {
             finish_locked();
+        } else if (s_debug_mode) {
+            s_paused_from = COMPETITION_TARGET_TRAVEL;
+            s_pause_kind = DEBUG_STATION_TARGET;
+            change_state(COMPETITION_DEBUG_PAUSE);
         } else {
             /* 直接盲走到下一个靶环，不再循迹 */
             start_blind_move(s_config.target_step_mm, COMPETITION_TARGET_IDENTIFY);
@@ -666,8 +675,15 @@ static void update_tray_state(bool source)
     }
     if (!tray_controller_busy() && tray.motion == TRAY_MOTION_DONE) {
         if (source) {
-            /* 下一个空槽已就位，盲走到下一个物料后继续识别 */
-            start_blind_move(s_config.source_step_mm, COMPETITION_SOURCE_IDENTIFY);
+            if (s_debug_mode) {
+                /* 调试模式：分度完成后停车，人工盲走到下一个物料 */
+                s_paused_from = COMPETITION_SOURCE_TRAVEL;
+                s_pause_kind = DEBUG_STATION_SOURCE;
+                change_state(COMPETITION_DEBUG_PAUSE);
+            } else {
+                /* 下一个空槽已就位，盲走到下一个物料后继续识别 */
+                start_blind_move(s_config.source_step_mm, COMPETITION_SOURCE_IDENTIFY);
+            }
         } else {
             change_state(COMPETITION_TARGET_PLACE);
         }
@@ -865,6 +881,41 @@ bool competition_debug_paused(void)
     return s_debug_paused;
 }
 
+bool competition_debug_mode(void)
+{
+    return s_debug_mode;
+}
+
+esp_err_t competition_set_debug_mode(bool enable)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result = ESP_OK;
+    if (s_running) {
+        result = ESP_ERR_INVALID_STATE;
+    } else {
+        s_debug_mode = enable;
+    }
+    xSemaphoreGive(s_lock);
+    return result;
+}
+
+esp_err_t competition_debug_vision(void)
+{
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (s_running && s_state == COMPETITION_DEBUG_PAUSE && !s_resume_crossing) {
+        vision_mode_t mode = (s_pause_kind == DEBUG_STATION_TARGET)
+                                 ? VISION_MODE_RING : VISION_MODE_MATERIAL;
+        result = k230_link_set_mode(mode);
+    }
+    xSemaphoreGive(s_lock);
+    return result;
+}
+
 esp_err_t competition_debug_resume(void)
 {
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -889,11 +940,29 @@ esp_err_t competition_debug_execute(void)
        全部满足后进入既有动作脚本状态，由 enter_state() 启动机械臂。 */
     if (s_running && s_state == COMPETITION_DEBUG_PAUSE && !s_resume_crossing &&
         !tray_controller_busy() && chassis_lift_idle() && wheels_stopped()) {
+        /* 调试模式也尽量用最近 1s 的视觉结果：抓取时记录物料颜色，
+           放置时自动把物料盘转到对应颜色槽位（找不到再退回手动转盘）。 */
+        vision_result_t vision;
+        k230_link_get_result(&vision);
+        bool fresh = vision.received_ms > 0 &&
+                     (now_ms() - vision.received_ms) < 1000;
+        bool color_ok = fresh && vision.detected && vision.stable &&
+                        vision.color > VISION_COLOR_UNKNOWN;
         if (s_pause_kind == DEBUG_STATION_SOURCE) {
+            if (color_ok) {
+                s_current_color = vision.color;
+            }
             change_state(COMPETITION_SOURCE_PICK_LOAD);
             result = ESP_OK;
         } else if (s_pause_kind == DEBUG_STATION_TARGET) {
-            change_state(COMPETITION_TARGET_PLACE);
+            if (color_ok) {
+                s_required_color = vision.color;
+            }
+            if (tray_controller_find_color(s_required_color) >= 0) {
+                change_state(COMPETITION_TARGET_SELECT);
+            } else {
+                change_state(COMPETITION_TARGET_PLACE);
+            }
             result = ESP_OK;
         }
     }
@@ -913,6 +982,7 @@ void competition_get_status(competition_status_t *out)
         .state = s_state,
         .error = s_error,
         .running = s_running,
+        .debug_mode = s_debug_mode,
         .debug_paused = s_debug_paused,
         .resume_crossing = s_resume_crossing,
         .pause_kind = s_pause_kind,
