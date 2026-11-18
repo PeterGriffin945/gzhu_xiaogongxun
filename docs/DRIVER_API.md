@@ -1027,18 +1027,21 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
   "dbg":0, "cross":0, "pk":0,
   "cfgok":0, "zok":0, "picked":0, "placed":0, "align":0,
   "color":0, "required":0, "zpos":0, "state_ms":0, "run_ms":0,
-  "tray":{"zero":0,"slot":0,"target":0,"motion":0,"speed":60,"ms":500,
-          "colors":[0,0,0,0,0,0]},
+  "tray":{"zero":0,"slot":0,"target":0,"motion":0,"speed":60,"ms":1000,
+          "colors":[0,0,0]},
   "link":{"online":0,"mode":0,"ack":0,"frames":0},
   "vision":{"mode":0,"color":0,"detected":0,"stable":0,
             "cx":0,"cy":0,"area":0,"conf":0,"age":-1},
   "aim":{"dx":0,"dy":0,"mmx":0.0,"mmy":0.0,"dist":0.0,"aligned":0,"tol":8},
   "cfg":{"zpick":96000,"ztray":40000,"zplace":96000,"zmax":160000,
-         "bstow":90,"bpick":0,"btray":180,"bplace":0,"gopen":30,"gclose":80,
+         "bstow":90,"bpick":0,"btray":180,"bplace":0,"gopen":60,"gclose":120,
+         "gopenms":500,"gclosems":700,
          "bms":450,"gms":300,"bspeed":60,"bsweep":2400,"lsps":6400.0,
          "mcx":320,"mcy":240,"rcx":320,"rcy":240,
-         "tol":8,"minconf":10,"maxiter":5,"xsign":1,"ysign":1,"nudge":3.00,"asps":200.0,
-         "tspeed":60,"tms":500,"sblack":6,"sconfirm":2,"sclear":3,"srearm":3,"sinterval":800}
+         "tol":8,"minconf":10,"maxiter":5,"xsign":1,"ysign":1,"nudge":25.0,"asps":3200.0,
+         "tspeed":60,"tms":1000,
+         "senter":150,"sstep":150,"sexit":-450,"tenter":150,"tstep":150,
+         "sblack":6,"sconfirm":2,"sclear":3,"srearm":3,"sinterval":800}
 }
 ```
 
@@ -1059,8 +1062,8 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `tray.zero` | 盘位零点有效 |
 | `tray.slot/target` | 当前槽位 / 目标槽位 |
 | `tray.motion` | 0 IDLE / 1 RUNNING / 2 DONE / 3 ERROR |
-| `tray.speed/ms` | CH4 速度角 / 每工位脉冲时长 |
-| `tray.colors[6]` | 各槽位颜色（0 空 / 1 红 / 2 绿 / 3 蓝） |
+| `tray.speed/ms` | CH4 速度角 / 每格（120°）脉冲时长 |
+| `tray.colors[3]` | 3 个槽位颜色（0 空 / 1 红 / 2 绿 / 3 蓝） |
 | `link.online` | K230 是否在线 |
 | `link.mode/ack` | 请求模式 / 最后 ACK 模式 |
 | `link.frames` | 收到的合法帧总数 |
@@ -1074,7 +1077,10 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `aim.dist` | 建议位移的直线距离 mm |
 | `aim.aligned` | 是否已在容差内（可抓取） |
 | `aim.tol` | 当前像素容差 |
-| `cfg.*` | 当前标定值，字段名与 `/api/competition/config` 一致 |
+| `cfg.senter/sstep/sexit` | 物料区盲走距离 mm：横线→首料、物料间距、抓完 3 个回线（可为负） |
+| `cfg.tenter/tstep` | 靶环区盲走距离 mm：横线→首环、靶环间距 |
+| `cfg.gopenms/gclosems` | CH8 连续夹爪开/合通电时间 ms |
+| `cfg.*` | 其他标定值，字段名与 `/api/competition/config` 一致 |
 
 ### 4.15 `settings.h` —— 调参参数持久化
 

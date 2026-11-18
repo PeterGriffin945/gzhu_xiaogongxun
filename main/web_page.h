@@ -351,13 +351,18 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
         <label class="field">修正轮速步/秒<input type="number" data-cfg="asps"></label>
         <label class="field">CH4 正转速度角<input type="number" data-cfg="tspeed"></label>
         <label class="field">CH4 每格 120° ms<input type="number" data-cfg="tms"></label>
+        <label class="field">物料：横线→首料 mm<input type="number" data-cfg="senter"></label>
+        <label class="field">物料间距 mm<input type="number" data-cfg="sstep"></label>
+        <label class="field">抓完 3 个回线 mm<input type="number" data-cfg="sexit"></label>
+        <label class="field">靶环：横线→首环 mm<input type="number" data-cfg="tenter"></label>
+        <label class="field">靶环间距 mm<input type="number" data-cfg="tstep"></label>
         <label class="field">横线最少黑探头<input type="number" data-cfg="sblack"></label>
         <label class="field">横线确认帧数<input type="number" data-cfg="sconfirm"></label>
         <label class="field">离站最多黑探头<input type="number" data-cfg="sclear"></label>
         <label class="field">正常线重装帧数<input type="number" data-cfg="srearm"></label>
         <label class="field">工位最小间隔 ms<input type="number" data-cfg="sinterval"></label>
       </div>
-      <button id="cfgSave" class="primary" style="width:100%;margin-top:10px">保存并确认本次标定</button>
+      <button id="cfgSave" class="primary" style="width:100%;margin-top:10px">💾 一键保存全部（标定 + 调参到 Flash）</button>
     </details>
     <div class="hint">初始化顺序：低速点动校机械方向 → 设 Z 运输零点 → 对齐盘位并设 slot0 → <b>把底座人工摆到运输角</b> → 实测并保存标定 → 打开底盘/升降 EN → 启动。任何中止都会使 Z、盘位与底座基准失效，需重新确认。</div>
     <div class="statusline" id="compMsg" style="margin-top:8px;color:var(--warn)"></div>
@@ -823,10 +828,13 @@ $("cfgSave").onclick = async () => {
   const params = new URLSearchParams({ confirm: "1" });
   cfgElements.forEach(el => params.set(el.dataset.cfg, el.value));
   const j = await api("/api/competition/config?" + params.toString());
-  $("compMsg").textContent = j.ok ? "标定已保存并确认" : (j.msg || "保存被拒绝");
+  let msg = j.ok ? "标定已保存并确认" : (j.msg || "保存被拒绝");
   if (j.ok) {
+    const tuned = await api("/settings?save=1");
+    msg += tuned.ok ? "；调参也已写入 Flash" : "；调参保存失败";
     S.cfgEditing = false;
   }
+  $("compMsg").textContent = msg;
   await pollComp();
 };
 

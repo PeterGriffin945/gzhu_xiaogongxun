@@ -27,6 +27,7 @@ typedef enum {
     COMPETITION_TARGET_ALIGN,
     COMPETITION_TARGET_SELECT,
     COMPETITION_TARGET_PLACE,
+    COMPETITION_BLIND_MOVE,    /* 离开/返回黑线的定步盲走 */
     COMPETITION_DEBUG_PAUSE,   /* 逢横线即停：等待 Web 人工抓取 */
     COMPETITION_FINISHED,
     COMPETITION_ABORTED,
@@ -62,6 +63,13 @@ typedef struct {
     float align_speed_sps;
     uint8_t tray_speed_angle;
     uint32_t tray_index_ms;
+    /* 盲走距离 mm（正=前进，负=后退）：横线 → 第一个物料/靶环、物料之间的间距、
+       抓完 3 个后回到黑线的距离。必须按实车标定。 */
+    int32_t source_enter_mm;
+    int32_t source_step_mm;
+    int32_t source_exit_mm;
+    int32_t target_enter_mm;
+    int32_t target_step_mm;
     station_detector_config_t station;
 } competition_config_t;
 

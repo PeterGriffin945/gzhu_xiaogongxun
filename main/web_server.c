@@ -536,7 +536,10 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         "\"gopenms\":%d,\"gclosems\":%d,"
         "\"bms\":%d,\"gms\":%d,\"bspeed\":%d,\"bsweep\":%d,\"lsps\":%.1f,\"mcx\":%d,\"mcy\":%d,\"rcx\":%d,\"rcy\":%d,"
         "\"tol\":%d,\"minconf\":%d,\"maxiter\":%d,\"xsign\":%d,\"ysign\":%d,\"nudge\":%.2f,\"asps\":%.1f,"
-        "\"tspeed\":%d,\"tms\":%" PRIu32 ",\"sblack\":%d,\"sconfirm\":%d,\"sclear\":%d,\"srearm\":%d,\"sinterval\":%" PRIu32 "}}",
+        "\"tspeed\":%d,\"tms\":%" PRIu32 ","
+        "\"senter\":%" PRId32 ",\"sstep\":%" PRId32 ",\"sexit\":%" PRId32 ","
+        "\"tenter\":%" PRId32 ",\"tstep\":%" PRId32 ","
+        "\"sblack\":%d,\"sconfirm\":%d,\"sclear\":%d,\"srearm\":%d,\"sinterval\":%" PRIu32 "}}",
         competition_state_name(st.state), competition_error_name(st.error), st.running ? 1 : 0,
         st.debug_paused ? 1 : 0, st.resume_crossing ? 1 : 0, st.pause_kind,
         st.config_confirmed ? 1 : 0, st.z_zero_valid ? 1 : 0, st.picked_count, st.placed_count,
@@ -561,7 +564,9 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         cfg.material_target_cx, cfg.material_target_cy, cfg.ring_target_cx, cfg.ring_target_cy,
         cfg.vision_tolerance_px, cfg.vision_min_confidence, cfg.max_align_iterations,
         cfg.vision_x_sign, cfg.vision_y_sign, cfg.align_nudge_mm, cfg.align_speed_sps,
-        cfg.tray_speed_angle, cfg.tray_index_ms, cfg.station.min_black,
+        cfg.tray_speed_angle, cfg.tray_index_ms,
+        cfg.source_enter_mm, cfg.source_step_mm, cfg.source_exit_mm,
+        cfg.target_enter_mm, cfg.target_step_mm, cfg.station.min_black,
         cfg.station.confirm_frames, cfg.station.clear_max_black, cfg.station.rearm_frames,
         cfg.station.min_interval_ms);
     if (n < 0 || n >= (int)sizeof(buf)) {
@@ -666,6 +671,11 @@ static esp_err_t competition_config_handler(httpd_req_t *req)
     READ_CFG_FLOAT("asps", cfg.align_speed_sps);
     READ_CFG_INT("tspeed", cfg.tray_speed_angle);
     READ_CFG_INT("tms", cfg.tray_index_ms);
+    READ_CFG_INT("senter", cfg.source_enter_mm);
+    READ_CFG_INT("sstep", cfg.source_step_mm);
+    READ_CFG_INT("sexit", cfg.source_exit_mm);
+    READ_CFG_INT("tenter", cfg.target_enter_mm);
+    READ_CFG_INT("tstep", cfg.target_step_mm);
     READ_CFG_INT("sblack", cfg.station.min_black);
     READ_CFG_INT("sconfirm", cfg.station.confirm_frames);
     READ_CFG_INT("sclear", cfg.station.clear_max_black);

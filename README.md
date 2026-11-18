@@ -167,77 +167,57 @@ mode, color, flags, cx_lo, cx_hi, cy_lo, cy_hi, area_lo, area_hi, confidence, re
 
 ## 3. 自动比赛流程（三取三放）
 
-### 3.0 当前调试策略：逢横线即停
+### 3.0 比赛策略：横线 → 盲走 → 视觉抓取（全自动）
 
-本版本用于**无视觉（K230 可完全断开）的人工对位 + 半自动三取三放**：
+`main/competition.c` 顶部 `COMPETITION_AUTO_MODE = 1`，比赛全程无人：
 
-1. `SOURCE_TRAVEL` / `TARGET_TRAVEL` 检测到横线 → 立即平滑停车，进入
-   `DEBUG_PAUSE`，并记录本站类型（物料站 / 靶环站）。
-2. 暂停期间网页的方向键（`/api/move`）、升降（`/api/lift`）、舵机
-   （`/api/servo`）和物料盘分度（`tray_next` / `tray_to`）可直接接管。
-   人工把车开到物料/靶环的正前方，并调好升降高度与底座/夹爪姿态。
-3. 点“**执行抓取**”（物料站）或“**执行放置**”（靶环站）→ 进入既有的
-   `SOURCE_PICK_LOAD` / `TARGET_PLACE` 动作脚本，AGV 自动完成夹取、
-   升降、装盘/放置，全程不需要视觉。
-4. 动作完成后自动继续：物料站会再 `SOURCE_INDEX` 转一个盘位，然后切回
-   循迹前往下一条横线；靶环站直接切回 `TARGET_TRAVEL`。此时人工无需操作，
-   直到下一次停车再接管。
-5. 已抓 3 个后自动转入靶环阶段；已放 3 个后 `FINISHED` 停车。
-6. 若本站不需要动作，点“**跳过本站 / 恢复循迹**”：底盘自动向前定步
-   `DEBUG_RESUME_CROSS_STEPS`（默认 1500 微步 ≈ 96mm）跨出横线，
-   重置并重新武装站点检测后继续循迹。
+1. 循迹检测到物料站横线 → 停车（BRAKE）→ 按 `source_enter_mm` **盲走**到第一个物料进入相机视野。
+2. K230 识别颜色 → 按 aim 比例平移对位 → 底座/升降/夹爪完成抓取并装盘。
+3. 物料盘转 120°（下一空槽）→ 按 `source_step_mm` 盲走到下一个物料 → 重复直到 3 个抓完。
+4. 抓完 3 个：按 `source_exit_mm`（通常为负）盲走回黑线 → 恢复循迹驶向靶环区。
+5. 靶环站横线 → 停车 → 按 `target_enter_mm` 盲走到第一个靶环 → 识别颜色 → 对位 →
+   从对应盘位取料放置。
+6. 按 `target_step_mm` 盲走到下一个靶环，重复 3 个 → `FINISHED`。
+7. 全自动下丢线 3s、视觉超时、动作超时、K230 离线都会安全中止。
 
-人工暂停时间不计入 6 分钟总时限。完整自动流程（BRAKE/IDENTIFY/ALIGN 等）
-仍保留在代码中，但在当前策略下不会被走到。
+盲走距离在网页比赛卡片的
+“物料：横线→首料 / 物料间距 / 抓完回线 / 靶环：横线→首环 / 靶环间距”中标定，
+标定完点 **“一键保存全部（标定 + 调参到 Flash）”** 写入 NVS。
+
+需要人工调试时，把 `COMPETITION_AUTO_MODE` 改成 `0` 重新编译，即回到
+“逢横线即停、网页执行/跳过”的半自动模式。
 
 ### 3.1 状态机
 
 ```
-MANUAL ──start──► ARM_STOW
-                      │
-                      ▼
-              ┌─► SOURCE_TRAVEL ─► SOURCE_BRAKE ─► SOURCE_IDENTIFY ─► SOURCE_ALIGN
-              │        ▲                                                        │
-              │        │                                                        ▼
-              │   SOURCE_INDEX ◄────────────────────────────── SOURCE_PICK_LOAD
-              │        │（已装 <3）                                              │
-              │        │                                                        │（已装 3）
-              │        │                                                        ▼
-              │        │                                                  TARGET_TRAVEL
-              │        │                                                        │
-              │        │                                                        ▼
-              │        │                             TARGET_BRAKE ─► TARGET_IDENTIFY
-              │        │                                                        │
-              │        │                                                        ▼
-              │        │                              TARGET_ALIGN ─► TARGET_SELECT
-              │        │                                                        │
-              │        │                                                        ▼
-              │        │                                                  TARGET_PLACE
-              │        │                                                        │
-              │        └────────（已放 <3）───────────────────────────────────────┤
-              │                                                                 │（已放 3）
-              │                                                                 ▼
-              │                                                             FINISHED
-              └─（任意状态故障 / 超时 / 手动中止）──────────────────────────► ABORTED
+MANUAL → ARM_STOW → SOURCE_TRAVEL → SOURCE_BRAKE
+      → BLIND_MOVE(横线→首料) → SOURCE_IDENTIFY → SOURCE_ALIGN → SOURCE_PICK_LOAD
+      → SOURCE_INDEX → BLIND_MOVE(物料间距) → SOURCE_IDENTIFY → …（共 3 个）
+      → BLIND_MOVE(抓完回线) → SOURCE_TRAVEL（去靶环区）
+      → TARGET_BRAKE → BLIND_MOVE(横线→首环) → TARGET_IDENTIFY → TARGET_ALIGN
+      → TARGET_SELECT → TARGET_PLACE
+      → BLIND_MOVE(靶环间距) → TARGET_IDENTIFY → …（共 3 个）→ FINISHED
+任意故障 / 超时 / 手动中止 → ABORTED
 ```
 
 | 状态 | 行为 |
 |---|---|
 | `MANUAL` | 待机，网页手动命令可用 |
 | `ARM_STOW` | 收臂脚本：张开夹爪 → Z 回运输位 → 底座回运输角 |
-| `SOURCE_TRAVEL` | 切循迹模式驶向物料区；横线事件触发后停车并进入 `DEBUG_PAUSE` |
-| `SOURCE_BRAKE` | 等待四轮实际速度降到 0；超时按当前加速度动态计算 |
+| `SOURCE_TRAVEL` | 切循迹模式驶向物料区；横线触发后停车，交给 BRAKE |
+| `SOURCE_BRAKE` | 等待四轮速度归零，然后按 `source_enter_mm` 盲走到首料 |
 | `SOURCE_IDENTIFY` | K230 进入 MATERIAL 模式，等待稳定颜色与置信度达标 |
 | `SOURCE_ALIGN` | 按视觉误差做短距开环平移，直到落在容差内或达到最大次数 |
 | `SOURCE_PICK_LOAD` | 执行"地面抓取 → 装入盘内 → 回运输位"动作脚本 |
-| `SOURCE_INDEX` | 物料盘正转一个工位（默认 60°），已装 3 个后转目标区 |
-| `TARGET_TRAVEL` | 循迹驶向靶环区；横线触发后同样进入 `DEBUG_PAUSE` |
-| `DEBUG_PAUSE` | 逢横线即停：人工对位后 `execute` 执行抓取/放置；或 `resume` 跳过并定步跨线 |
-| `TARGET_BRAKE` | 停车等待 |
+| `SOURCE_INDEX` | 物料盘分度 120°（3 槽）；随后按 `source_step_mm` 盲走到下一个物料 |
+| `TARGET_TRAVEL` | 循迹驶向靶环区；横线触发后停车 |
+| `BLIND_MOVE` | 按标定距离定步盲走（离开/返回黑线、物料或靶环间距） |
+| `DEBUG_PAUSE` | 仅 `COMPETITION_AUTO_MODE=0` 调试：人工对位后执行/跳过 |
+| `TARGET_BRAKE` | 停车后按 `target_enter_mm` 盲走到首环 |
 | `TARGET_IDENTIFY` | K230 进入 RING 模式，识别目标颜色 |
 | `TARGET_ALIGN` | 按靶环基准做视觉对位 |
 | `TARGET_SELECT` | 在物料盘中查找目标颜色并分度到对应工位 |
-| `TARGET_PLACE` | 执行"盘内取出 → 放到靶环 → 回运输位"动作脚本 |
+| `TARGET_PLACE` | 放置动作；随后按 `target_step_mm` 盲走到下一个靶环 |
 | `FINISHED` | 已放满 3 个，正常结束 |
 | `ABORTED` | 任意故障、超时或手动中止 |
 

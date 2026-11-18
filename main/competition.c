@@ -26,6 +26,8 @@
 #define COMPETITION_BRAKE_MARGIN_MS 800
 #define COMPETITION_SENSOR_TIMEOUT_MS 500
 #define COMPETITION_LINE_LOST_TIMEOUT_MS 3000
+/* 盲走单段最长等待：最长 5m、约 0.25m/s，再留足加减速余量 */
+#define COMPETITION_BLIND_TIMEOUT_MS 25000
 /* 1 = 比赛全自动（检测到站点直接进入识别/对位/抓放）；
    0 = 调试用“逢站点停车，等待网页执行/跳过”。 */
 #define COMPETITION_AUTO_MODE 1
@@ -61,6 +63,10 @@ static int64_t s_vision_after_ms;
 static uint32_t s_sensor_seq;
 static int64_t s_sensor_changed_ms;
 static int64_t s_line_seen_ms;
+
+/* 盲走：离开黑线去物料/靶环，或抓完 3 个后回到黑线 */
+static int32_t s_blind_mm;
+static competition_state_t s_blind_next_state = COMPETITION_MANUAL;
 
 /* 半自动调试抓取：无锁标志供 Web 手动命令查询，暂停计时不计入 6 分钟总时限 */
 static volatile bool s_debug_paused;
@@ -112,6 +118,11 @@ static void default_config(competition_config_t *config)
         .align_speed_sps = 200.0f * WHEEL_MICROSTEP,
         .tray_speed_angle = 60,
         .tray_index_ms = 1000,       /* 3 槽，每格 120°；按实车再标定 */
+        .source_enter_mm = 150,      /* 横线 → 第一个物料 */
+        .source_step_mm = 150,       /* 物料间距 */
+        .source_exit_mm = -450,      /* 抓完 3 个回黑线（通常 ≈ -(enter+2*step)） */
+        .target_enter_mm = 150,      /* 横线 → 第一个靶环 */
+        .target_step_mm = 150,       /* 靶环间距 */
     };
     station_detector_t detector;
     station_detector_init(&detector);
@@ -152,6 +163,16 @@ static bool valid_config(const competition_config_t *config)
         config->align_speed_sps > STEPPER_MAX_SPEED ||
         config->tray_speed_angle == 0 || config->tray_speed_angle >= 90 ||
         config->tray_index_ms < 20 || config->tray_index_ms > 10000) {
+        return false;
+    }
+    /* 盲走距离：±5m 内；物料/靶环间距必须非零，否则会在原地重复抓取 */
+    if (config->source_enter_mm < -5000 || config->source_enter_mm > 5000 ||
+        config->source_exit_mm < -5000 || config->source_exit_mm > 5000 ||
+        config->target_enter_mm < -5000 || config->target_enter_mm > 5000 ||
+        config->source_step_mm == 0 || config->source_step_mm < -5000 ||
+        config->source_step_mm > 5000 ||
+        config->target_step_mm == 0 || config->target_step_mm < -5000 ||
+        config->target_step_mm > 5000) {
         return false;
     }
     const station_detector_config_t *station = &config->station;
@@ -226,6 +247,34 @@ static void finish_locked(void)
     k230_link_set_mode(VISION_MODE_IDLE);
 }
 
+static void start_blind_move(int32_t mm, competition_state_t next)
+{
+    if (mm == 0) {
+        change_state(next);
+        return;
+    }
+    s_blind_mm = mm;
+    s_blind_next_state = next;
+    change_state(COMPETITION_BLIND_MOVE);
+}
+
+static void update_blind_move(void)
+{
+    if (now_ms() - s_state_started_ms > COMPETITION_BLIND_TIMEOUT_MS) {
+        abort_locked(COMPETITION_ERROR_CHASSIS);
+        return;
+    }
+    if (chassis_translation_active()) {
+        return;
+    }
+    if (!chassis_translation_done()) {
+        abort_locked(COMPETITION_ERROR_CHASSIS);
+        return;
+    }
+    chassis_stop();
+    change_state(s_blind_next_state);
+}
+
 static bool enter_state(void)
 {
     s_state_entry = false;
@@ -276,6 +325,17 @@ static bool enter_state(void)
             break;
         case COMPETITION_SOURCE_INDEX:
             err = tray_controller_start_next();
+            break;
+        case COMPETITION_BLIND_MOVE:
+            if (!stepper_chassis_enabled()) {
+                abort_locked(COMPETITION_ERROR_CHASSIS);
+                return false;
+            }
+            if (chassis_start_translation(0.0f, (float)s_blind_mm,
+                                          s_config.align_speed_sps) != ESP_OK) {
+                abort_locked(COMPETITION_ERROR_CHASSIS);
+                return false;
+            }
             break;
         case COMPETITION_TARGET_SELECT: {
             int slot = tray_controller_find_color(s_required_color);
@@ -419,7 +479,12 @@ static void update_brake(bool source)
         }
     }
     if (stopped) {
-        change_state(source ? COMPETITION_SOURCE_IDENTIFY : COMPETITION_TARGET_IDENTIFY);
+        /* 站点横线离物料/靶环还有一段距离：先盲走到识别位，再开视觉 */
+        if (source) {
+            start_blind_move(s_config.source_enter_mm, COMPETITION_SOURCE_IDENTIFY);
+        } else {
+            start_blind_move(s_config.target_enter_mm, COMPETITION_TARGET_IDENTIFY);
+        }
         return;
     }
     /* 刹车超时按当前加速度动态计算，低加速度（100 步/秒²）时 1.8s 远远不够。 */
@@ -572,14 +637,21 @@ static void update_manipulator_state(bool source)
             return;
         }
         s_picked_count++;
-        change_state((s_picked_count < 3) ? COMPETITION_SOURCE_INDEX : COMPETITION_TARGET_TRAVEL);
+        if (s_picked_count < 3) {
+            /* 还有下一个物料：先转盘分度，再盲走到下一个物料 */
+            change_state(COMPETITION_SOURCE_INDEX);
+        } else {
+            /* 3 个抓完：盲走回黑线，恢复循迹去靶环区 */
+            start_blind_move(s_config.source_exit_mm, COMPETITION_SOURCE_TRAVEL);
+        }
     } else {
         tray_controller_mark_empty(tray.current_slot);
         s_placed_count++;
         if (s_placed_count >= 3) {
             finish_locked();
         } else {
-            change_state(COMPETITION_TARGET_TRAVEL);
+            /* 直接盲走到下一个靶环，不再循迹 */
+            start_blind_move(s_config.target_step_mm, COMPETITION_TARGET_IDENTIFY);
         }
     }
 }
@@ -593,7 +665,12 @@ static void update_tray_state(bool source)
         return;
     }
     if (!tray_controller_busy() && tray.motion == TRAY_MOTION_DONE) {
-        change_state(source ? COMPETITION_SOURCE_TRAVEL : COMPETITION_TARGET_PLACE);
+        if (source) {
+            /* 下一个空槽已就位，盲走到下一个物料后继续识别 */
+            start_blind_move(s_config.source_step_mm, COMPETITION_SOURCE_IDENTIFY);
+        } else {
+            change_state(COMPETITION_TARGET_PLACE);
+        }
     }
 }
 
@@ -671,6 +748,9 @@ static void competition_update(void)
             break;
         case COMPETITION_TARGET_SELECT:
             update_tray_state(false);
+            break;
+        case COMPETITION_BLIND_MOVE:
+            update_blind_move();
             break;
         case COMPETITION_DEBUG_PAUSE:
             update_debug_pause();
@@ -924,7 +1004,8 @@ const char *competition_state_name(competition_state_t state)
         "MANUAL", "ARM_STOW", "SOURCE_TRAVEL", "SOURCE_BRAKE",
         "SOURCE_IDENTIFY", "SOURCE_ALIGN", "SOURCE_PICK_LOAD", "SOURCE_INDEX",
         "TARGET_TRAVEL", "TARGET_BRAKE", "TARGET_IDENTIFY", "TARGET_ALIGN",
-        "TARGET_SELECT", "TARGET_PLACE", "DEBUG_PAUSE", "FINISHED", "ABORTED",
+        "TARGET_SELECT", "TARGET_PLACE", "BLIND_MOVE", "DEBUG_PAUSE",
+        "FINISHED", "ABORTED",
     };
     return (state <= COMPETITION_ABORTED) ? names[state] : "UNKNOWN";
 }
