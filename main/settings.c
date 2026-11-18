@@ -26,7 +26,8 @@
 #define SETTINGS_COMP_KEY  "comp"
 #define SETTINGS_MAGIC     0x54554E45U   /* 'TUNE' */
 #define COMP_SETTINGS_MAGIC 0x434F4D50U  /* 'COMP' */
-#define COMP_SETTINGS_VERSION 1
+/* v2：视觉目标点从 QVGA(160,120) 改为 VGA(320,240)，旧标定作废避免错位。 */
+#define COMP_SETTINGS_VERSION 2
 /* v2：速度/加速度单位从整步改为 1/16 微步，旧值必须丢弃后按新默认重来 */
 #define SETTINGS_VERSION   2
 #define SETTINGS_DEBOUNCE_US (2 * 1000 * 1000)

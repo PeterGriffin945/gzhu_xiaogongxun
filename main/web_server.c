@@ -502,6 +502,25 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
     competition_config_t cfg = { 0 };
     competition_get_status(&st);
     competition_get_config(&cfg);
+
+    /* 物料/靶环相对画面中心的偏差 → 小车该往哪边移动多少（文本提示用）。
+       像素→毫米比例见 app_config.h 的 VISION_MM_PER_PX。 */
+    int target_cx = (st.vision.mode == VISION_MODE_RING) ? cfg.ring_target_cx
+                                                         : cfg.material_target_cx;
+    int target_cy = (st.vision.mode == VISION_MODE_RING) ? cfg.ring_target_cy
+                                                         : cfg.material_target_cy;
+    int aim_dx = 0, aim_dy = 0, aim_aligned = 0;
+    float aim_mmx = 0.0f, aim_mmy = 0.0f, aim_dist = 0.0f;
+    if (st.vision.detected) {
+        aim_dx = (int)st.vision.cx - target_cx;
+        aim_dy = (int)st.vision.cy - target_cy;
+        aim_aligned = (abs(aim_dx) <= cfg.vision_tolerance_px &&
+                       abs(aim_dy) <= cfg.vision_tolerance_px) ? 1 : 0;
+        aim_mmx = (float)aim_dx * VISION_MM_PER_PX * (float)cfg.vision_x_sign;
+        aim_mmy = (float)aim_dy * VISION_MM_PER_PX * (float)cfg.vision_y_sign;
+        aim_dist = sqrtf(aim_mmx * aim_mmx + aim_mmy * aim_mmy);
+    }
+
     char buf[4096];
     int n = snprintf(buf, sizeof(buf),
         "{\"ok\":1,\"state\":\"%s\",\"error\":\"%s\",\"running\":%d,"
@@ -511,6 +530,7 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         "\"tray\":{\"zero\":%d,\"slot\":%d,\"target\":%d,\"motion\":%d,\"speed\":%d,\"ms\":%" PRIu32 ",\"colors\":[%d,%d,%d,%d,%d,%d]},"
         "\"link\":{\"online\":%d,\"mode\":%d,\"ack\":%d,\"frames\":%" PRIu32 "},"
         "\"vision\":{\"mode\":%d,\"color\":%d,\"detected\":%d,\"stable\":%d,\"cx\":%d,\"cy\":%d,\"area\":%d,\"conf\":%d,\"age\":%" PRId64 "},"
+        "\"aim\":{\"dx\":%d,\"dy\":%d,\"mmx\":%.1f,\"mmy\":%.1f,\"dist\":%.1f,\"aligned\":%d,\"tol\":%d},"
         "\"cfg\":{\"zpick\":%" PRId32 ",\"ztray\":%" PRId32 ",\"zplace\":%" PRId32 ",\"zmax\":%" PRId32 ","
         "\"bstow\":%d,\"bpick\":%d,\"btray\":%d,\"bplace\":%d,\"gopen\":%d,\"gclose\":%d,"
         "\"bms\":%d,\"gms\":%d,\"bspeed\":%d,\"bsweep\":%d,\"lsps\":%.1f,\"mcx\":%d,\"mcy\":%d,\"rcx\":%d,\"rcy\":%d,"
@@ -529,6 +549,7 @@ static esp_err_t competition_status_handler(httpd_req_t *req)
         st.vision.mode, st.vision.color, st.vision.detected ? 1 : 0, st.vision.stable ? 1 : 0,
         st.vision.cx, st.vision.cy, st.vision.area, st.vision.confidence,
         st.vision.received_ms > 0 ? esp_timer_get_time() / 1000 - st.vision.received_ms : -1,
+        aim_dx, aim_dy, aim_mmx, aim_mmy, aim_dist, aim_aligned, cfg.vision_tolerance_px,
         cfg.manipulator.z_ground_pick, cfg.manipulator.z_tray, cfg.manipulator.z_ground_place,
         cfg.manipulator.z_max, cfg.manipulator.base_stow, cfg.manipulator.base_pick,
         cfg.manipulator.base_tray, cfg.manipulator.base_place, cfg.manipulator.gripper_open,

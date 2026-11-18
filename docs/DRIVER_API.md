@@ -3,7 +3,7 @@
 > 适用工程：`E:\xiaogongxun_codes\helloworld`（ESP-IDF ≥ 5.2，已在 6.1.0 验证）
 > 目标芯片：ESP32-S3　构建系统：CMake + `idf.py build`
 > 本文档描述**已实现的公共 API**，不含内部实现细节。所有函数都带 `extern "C"` 保护。
-> 视觉端为 K230D / CanMV（MicroPython），通过 UART1 ↔ PORT2 与 ESP32 通信。
+> 视觉端为 K230D / CanMV（MicroPython），通过 UART1 ↔ PORT1（GPIO40/41）与 ESP32 通信。
 
 ---
 
@@ -87,7 +87,9 @@ TRACK_MM             190.0f                         // 轮距
 |---|---|
 | ESP32 逻辑串口 | UART1（重映射到 UART0 排针 GPIO43/44） |
 | ESP32 TX / RX | GPIO43 / GPIO44，115200 8N1 |
-| K230 端口 | PORT2（UART2），115200 8N1 |
+| K230 端口 | **PORT1（UART1）**：FPIOA GPIO40=TX、GPIO41=RX，115200 8N1 |
+| 接线 | K230 GPIO40(TX) → ESP GPIO44(RX)；K230 GPIO41(RX) ← ESP GPIO43(TX)；共地 |
+| K230 屏幕 | DNK230D 板载 ST7701 640×480；摄像头 VGA 640×480 |
 | ESP32 控制台 | USB Serial/JTAG（`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`） |
 | 链路超时 | ESP32 侧 1500ms；K230 侧 2000ms |
 | 结果新鲜度 | 400ms |
@@ -1030,10 +1032,11 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
   "link":{"online":0,"mode":0,"ack":0,"frames":0},
   "vision":{"mode":0,"color":0,"detected":0,"stable":0,
             "cx":0,"cy":0,"area":0,"conf":0,"age":-1},
+  "aim":{"dx":0,"dy":0,"mmx":0.0,"mmy":0.0,"dist":0.0,"aligned":0,"tol":8},
   "cfg":{"zpick":96000,"ztray":40000,"zplace":96000,"zmax":160000,
          "bstow":90,"bpick":0,"btray":180,"bplace":0,"gopen":30,"gclose":80,
          "bms":450,"gms":300,"bspeed":60,"bsweep":2400,"lsps":6400.0,
-         "mcx":160,"mcy":120,"rcx":160,"rcy":120,
+         "mcx":320,"mcy":240,"rcx":320,"rcy":240,
          "tol":8,"minconf":10,"maxiter":5,"xsign":1,"ysign":1,"nudge":3.00,"asps":200.0,
          "tspeed":60,"tms":500,"sblack":6,"sconfirm":2,"sclear":3,"srearm":3,"sinterval":800}
 }
@@ -1063,9 +1066,14 @@ LU9685 离线时 `/api/servo` 返回 400；自动比赛运行中，手动执行�
 | `link.frames` | 收到的合法帧总数 |
 | `vision.mode/color` | 最近检测的模式 / 颜色 |
 | `vision.detected/stable` | 是否检测到 / 是否稳定 |
-| `vision.cx/cy/area` | 目标中心与面积（像素） |
+| `vision.cx/cy/area` | 目标中心与面积（VGA 像素，0~639 / 0~479） |
 | `vision.conf` | 置信度 % |
 | `vision.age` | 结果年龄 ms；无结果为 -1 |
+| `aim.dx/dy` | 相对目标点的像素偏差（cx-mcx / cy-mcy） |
+| `aim.mmx/mmy` | 换算到小车坐标的建议位移 mm，正=右/前，已含 `xsign/ysign` |
+| `aim.dist` | 建议位移的直线距离 mm |
+| `aim.aligned` | 是否已在容差内（可抓取） |
+| `aim.tol` | 当前像素容差 |
 | `cfg.*` | 当前标定值，字段名与 `/api/competition/config` 一致 |
 
 ### 4.15 `settings.h` —— 调参参数持久化
@@ -1187,11 +1195,11 @@ DETECTION payload：
 
 | 文件 | 职责 |
 |---|---|
-| `config.py` | UART2/PORT2、115200 8N1；心跳 500ms；检测 80ms；ESP 链路超时 2000ms；QVGA 320×240；LAB 阈值；MATERIAL/RING 的 ROI 与面积阈值；`DEBUG_UART_LOG=False` |
+| `config.py` | 通用版参数（UART2/PORT2、QVGA 320×240 等）；**DNK230D 请直接用下面的 `servo_align.py`** |
 | `protocol.py` | 帧编码/解码、CRC8、流式 `FrameParser`、`TxSequence`、`build_heartbeat/ack/detection`；不依赖硬件 |
 | `vision.py` | 按颜色分别 `find_blobs`，在 ROI 内选最大有效 blob；连续 3 帧同色才 `stable`；置信度由像素密度与面积计算 |
 | `main.py` | 打开 UART(2)，解析帧；每个合法 COMMAND 清空投票并立即 ACK；每 500ms 发心跳；每 80ms 发 DETECTION；在板载屏显示待机/识别/通信状态 |
-| `servo_align.py` | Gemini 视觉伺服改进版：最大色块 + 画面中心准星 + dx/dy；MATERIAL/RING 分区 ROI；相机 CSI 自动探测 0/1/2（可用 `SENSOR_ID` 锁定）；`USE_LCD` 切换板载 ST7701 或 IDE 虚拟屏；UART(2) 上实现与 `main.py` 完全相同的命令/ACK/心跳/检测协议 |
+| `servo_align.py` | **正点原子 DNK230D 专用**：按官方例程用 `Sensor(width=1280,height=960)` + `Sensor.VGA` + `Display.ST7701 640×480`；FPIOA 把 GPIO40/41 映射为 UART1，通过 PORT1 与 ESP 通信；保留最大色块/准星/dx-dy 算法，MATERIAL/RING 分区 ROI，完整命令/ACK/心跳/80ms 检测协议 |
 | `from_Gemini.py` | 原始参考脚本，仅作对照：CRC 覆盖了同步字、使用 UART(1)、dx/dy 占用 cx/cy、无周期上报，**不能与当前固件通信** |
 
 约定：
@@ -1426,7 +1434,7 @@ ESP_ERROR_CHECK(competition_start());
 | `k230/protocol.py` | K230 帧协议实现 |
 | `k230/vision.py` | blob 识别与颜色投票 |
 | `k230/main.py` | K230 主循环与屏幕状态 |
-| `k230/servo_align.py` | K230 视觉伺服改进版（ROI/屏幕自适应/完整协议） |
+| `k230/servo_align.py` | DNK230D 视觉节点（ST7701 640×480 + UART1 GPIO40/41） |
 | `k230/from_Gemini.py` | 原始 Gemini 参考脚本（未适配协议） |
 | `README.md` | 接线、编译烧录、比赛流程、Web 使用 |
 | `docs/DRIVER_API.md` | 本接口手册 |

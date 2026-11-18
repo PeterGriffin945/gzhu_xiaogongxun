@@ -92,10 +92,10 @@ static void default_config(competition_config_t *config)
             .gripper_settle_ms = 300,
             .lift_speed_sps = LIFT_SPEED_DEFAULT,
         },
-        .material_target_cx = 160,
-        .material_target_cy = 120,
-        .ring_target_cx = 160,
-        .ring_target_cy = 120,
+        .material_target_cx = 320,   /* DNK230D 摄像头为 VGA 640x480 */
+        .material_target_cy = 240,
+        .ring_target_cx = 320,
+        .ring_target_cy = 240,
         .vision_tolerance_px = 8,
         .vision_min_confidence = 10,
         .max_align_iterations = 5,
@@ -128,8 +128,9 @@ static bool valid_config(const competition_config_t *config)
         m->lift_speed_sps < LIFT_SPEED_MIN || m->lift_speed_sps > LIFT_SPEED_MAX) {
         return false;
     }
-    if (config->material_target_cx >= 320 || config->ring_target_cx >= 320 ||
-        config->material_target_cy >= 240 || config->ring_target_cy >= 240 ||
+    /* K230D 使用 VGA 640x480，目标点范围随之放大 */
+    if (config->material_target_cx >= 640 || config->ring_target_cx >= 640 ||
+        config->material_target_cy >= 480 || config->ring_target_cy >= 480 ||
         config->vision_tolerance_px == 0 || config->vision_tolerance_px > 100 ||
         config->vision_min_confidence > 100 || config->max_align_iterations == 0 ||
         config->max_align_iterations > 20 ||

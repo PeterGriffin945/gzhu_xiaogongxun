@@ -53,13 +53,18 @@ extern "C" {
 #define LU9685_CH_TRAY     4      /* 物料盘旋转舵机 SG90 */
 #define LU9685_CH_GRIPPER  8      /* 夹爪开合舵机 20kg */
 
-/* K230D PORT2：UART1 重映射到已确认的 UART0 排针，控制台需迁至原生 USB。 */
+/* K230D PORT1（FPIOA: GPIO40=UART1_TXD / GPIO41=UART1_RXD）↔ ESP32 UART1。
+ * ESP 侧 TX=GPIO43 → K230 GPIO41；ESP 侧 RX=GPIO44 ← K230 GPIO40；两板共地。 */
 #define K230_UART_PORT      1
 #define PIN_K230_TX         43
 #define PIN_K230_RX         44
 #define K230_UART_BAUD      115200
 #define K230_LINK_TIMEOUT_MS 1500
 #define K230_RESULT_TIMEOUT_MS 400
+
+/* 视觉像素 → 毫米的换算比例（用于网页显示“该往哪边移动多少”）。
+ * 与镜头安装高度、视场角有关：镜头越远/越广，数值越小。按实测标定。 */
+#define VISION_MM_PER_PX    0.30f
 
 /* ==========================================================================
  * 三、步进细分与脉冲发生器 (DDS) 参数

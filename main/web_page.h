@@ -325,7 +325,8 @@ details{margin-top:12px}summary{cursor:pointer;font-size:12px;color:var(--acc);m
       <button id="trayZero">设当前盘位为 slot0</button>
       <button id="trayNext">正转 60°</button>
     </div>
-    <div class="statusline" id="visionInfo" style="margin-top:8px">K230 等待状态…</div>
+    <div class="statusline" id="aimInfo" style="margin-top:8px;font-size:14px;color:var(--dim)">物料：未检测到</div>
+    <div class="statusline" id="visionInfo" style="margin-top:6px">K230 等待状态…</div>
     <details>
       <summary>动作、视觉、分度与横线标定（默认值必须实测）</summary>
       <div class="grid2">
@@ -866,6 +867,29 @@ function renderComp(j) {
       `<br><span class="c${color}">${colorNames[color] || "?"}</span></div>`;
   }
   $("compSlots").innerHTML = slots;
+  const aim = j.aim || { dx: 0, dy: 0, mmx: 0, mmy: 0, aligned: 0, tol: 0 };
+  let aimText = "物料：未检测到";
+  let aimColor = "var(--dim)";
+  if (j.vision.detected) {
+    const cname = colorNames[j.vision.color] || "未知";
+    if (aim.aligned) {
+      aimText = `物料：${cname} · 已对准，可以抓取`;
+      aimColor = "var(--ok)";
+    } else {
+      const parts = [];
+      if (Math.abs(aim.dx) > aim.tol) {
+        parts.push(`${aim.mmx >= 0 ? "向右" : "向左"} ${(Math.abs(aim.mmx) / 10).toFixed(1)} cm`);
+      }
+      if (Math.abs(aim.dy) > aim.tol) {
+        parts.push(`${aim.mmy >= 0 ? "向前" : "向后"} ${(Math.abs(aim.mmy) / 10).toFixed(1)} cm`);
+      }
+      aimText = `物料：${cname} · 需${parts.join("、")} · 偏差 ${aim.dx},${aim.dy} px`;
+      aimColor = "var(--warn)";
+    }
+  }
+  $("aimInfo").textContent = aimText;
+  $("aimInfo").style.color = aimColor;
+
   $("visionInfo").textContent = `K230 ${j.link.online ? "在线" : "离线"} · 模式 ${j.link.mode}/${j.link.ack}` +
     ` · ${j.vision.detected ? (j.vision.stable ? "稳定" : "检测中") : "无目标"}` +
     ` · ${colorNames[j.vision.color] || "未知"} (${j.vision.cx},${j.vision.cy})` +

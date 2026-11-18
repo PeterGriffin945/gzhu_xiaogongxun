@@ -20,7 +20,7 @@ helloworld/
 ├── k230/                       # K230D / CanMV 视觉端
 │   ├── config.py               # UART、心跳、检测周期、LAB 阈值、ROI
 │   ├── main.py                 # 主循环：收命令、ACK、心跳、检测上报、屏幕状态
-│   ├── servo_align.py          # ★ Gemini 视觉伺服改进版：ROI 分模式 + 屏幕自适应 + 同协议
+│   ├── servo_align.py          # ★ DNK230D 专用：ST7701 640x480 + PORT1 UART1 + ROI/协议
 │   ├── protocol.py             # A5 5A 帧编解码、CRC8、流式解析、发送序号
 │   ├── vision.py               # blob 识别、颜色投票、置信度
 │   └── from_Gemini.py          # 原始 Gemini 参考脚本（协议未适配，仅供对照）
@@ -106,10 +106,12 @@ helloworld/
 | ESP32 TX | GPIO 43 → K230 RX |
 | ESP32 RX | GPIO 44 ← K230 TX |
 | 波特率 / 格式 | 115200，8N1，无硬件流控 |
-| K230 端口 | PORT2（UART2），115200 8N1，不做额外引脚映射 |
+| K230 端口 | **PORT1（UART1）**：GPIO40=TX、GPIO41=RX，115200 8N1 |
+| K230 屏幕 | ST7701 **640×480**，摄像头 VGA 640×480（DNK230D 官方例程配置） |
 | ESP32 控制台 | 已迁至 **USB Serial/JTAG**（`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`） |
 
-- 两板必须共地；ESP32 的 GPIO43/44 与 K230 PORT2 的 TX/RX 交叉连接。
+- 两板必须共地；交叉连接：**K230 GPIO40(TX) → ESP GPIO44(RX)**、
+  **K230 GPIO41(RX) ← ESP GPIO43(TX)**。
 - 因为 GPIO43/44 被视觉链路占用，`idf.py monitor` 需走 ESP32-S3 原生 USB 口，
   不要再接 UART0 排针。
 - 上电后 `k230_link_init()` 会主动发送一次 `IDLE` 命令，把可能停留在上次模式的
@@ -155,10 +157,11 @@ mode, color, flags, cx_lo, cx_hi, cy_lo, cy_hi, area_lo, area_hi, confidence, re
 | 文件 | 用途 |
 |---|---|
 | `k230/main.py` | 工程默认视觉节点：模式状态屏幕、心跳、检测上报 |
-| `k230/servo_align.py` | Gemini 视觉伺服改进版：保留"最大色块 + 画面中心准星 + dx/dy"算法，新增 MATERIAL/RING 分区 ROI、ST7701/VIRT 屏幕自适应、完整命令/ACK/心跳协议 |
+| `k230/servo_align.py` | **DNK230D 专用**：按官方例程用 `Sensor(VGA)` + `Display.ST7701 640×480`；FPIOA 将 GPIO40/41 映射为 UART1；保留"最大色块 + 准星 + dx/dy"，含 MATERIAL/RING ROI、命令/ACK/心跳/80ms 上报 |
 | `k230/from_Gemini.py` | 原始参考脚本，CRC 覆盖范围与串口均未适配，**不要直接用于比赛** |
 
-`servo_align.py` 与 `main.py` 任选其一运行，二者不会同时运行（同一 UART2）。
+`servo_align.py` 是 **正点原子 DNK230D 专用版**（ST7701 640×480 + UART1 GPIO40/41），
+与 `main.py` 任选其一运行，二者不会同时运行。
 
 ---
 
@@ -400,6 +403,11 @@ idf.py -p COM18 flash monitor
    - 舵机当前角度、Wi-Fi 状态
 6. 比赛卡片每 **200ms** 轮询 `/api/competition`，显示状态机、已装/已放、
    Z 与盘位零点有效性、K230 在线/模式、视觉坐标与置信度。
+7. 识别到物料时，比赛卡片会用文字提示**该往哪边移动多少**，例如
+   `物料：红色 · 需向右 1.2 cm、向前 0.6 cm · 偏差 40,-20 px`；
+   进入容差后显示 `已对准，可以抓取`。像素→毫米比例由
+   `app_config.h` 的 `VISION_MM_PER_PX`（默认 0.30 mm/px）标定，
+   方向正负由比赛配置里的 `vision_x_sign/vision_y_sign` 决定。
 
 操作说明：
 
