@@ -102,10 +102,10 @@ extern "C" {
  * 四、机械参数 (麦轮逆运动学)
  *   轮径 / 轴距 / 轮距请按实车测量后修改
  * ========================================================================== */
-#define WHEEL_DIAMETER_MM       65.0f
+#define WHEEL_DIAMETER_MM       80.0f       /* 实测轮径 */
 #define WHEEL_STEPS_PER_REV     (200 * WHEEL_MICROSTEP)   /* 1.8° 电机 × 1/16 细分 = 3200 */
-#define WHEELBASE_MM            160.0f      /* 前后轴距 */
-#define TRACK_MM                190.0f      /* 左右轮距 */
+#define WHEELBASE_MM            167.0f      /* 前后轴心距（实测） */
+#define TRACK_MM                220.0f      /* 左右轮中心面距（实测） */
 
 #define CHASSIS_MAX_LINEAR_V    2.0f        /* 命令限制 m/s */
 #define CHASSIS_MAX_OMEGA       8.0f        /* 命令限制 rad/s */

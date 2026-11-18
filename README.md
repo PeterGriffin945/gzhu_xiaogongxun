@@ -337,12 +337,15 @@ MANUAL ──start──► ARM_STOW
 在 `main/app_config.h` 中：
 
 ```c
-#define WHEEL_DIAMETER_MM       65.0f    /* 轮径 */
+#define WHEEL_DIAMETER_MM       80.0f    /* 轮径（实测） */
 #define WHEEL_MICROSTEP         16       /* DRV8825 1/16 细分 */
 #define WHEEL_STEPS_PER_REV     (200 * WHEEL_MICROSTEP)   /* 3200 微步/圈 */
-#define WHEELBASE_MM            160.0f   /* 前后轴距 */
-#define TRACK_MM                190.0f   /* 左右轮距 */
+#define WHEELBASE_MM            167.0f   /* 前后轴心距（实测） */
+#define TRACK_MM                220.0f   /* 左右轮中心面距（实测） */
 ```
+
+当前参数下：`k = (167 + 220) / 2 = 193.5 mm`，
+每米约 `3200 / (π × 0.08) ≈ 12732` 微步。
 
 逆运动学（O 型，`vy` 前进、`vx` 右移、`ω` 逆时针为正）：
 

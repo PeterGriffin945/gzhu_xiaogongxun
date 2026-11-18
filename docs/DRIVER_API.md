@@ -74,11 +74,11 @@
 ### 1.4 机械参数（`app_config.h`，必须按实车改）
 
 ```c
-WHEEL_DIAMETER_MM    65.0f                          // 轮径
+WHEEL_DIAMETER_MM    80.0f                          // 轮径（实测）
 WHEEL_MICROSTEP      16                             // DRV8825 细分
 WHEEL_STEPS_PER_REV  (200 * WHEEL_MICROSTEP)        // 3200 微步/圈
-WHEELBASE_MM         160.0f                         // 轴距
-TRACK_MM             190.0f                         // 轮距
+WHEELBASE_MM         167.0f                         // 前/后轴心距（实测）
+TRACK_MM             220.0f                         // 左/右轮中心面距（实测）
 ```
 
 ### 1.5 K230 视觉串口
